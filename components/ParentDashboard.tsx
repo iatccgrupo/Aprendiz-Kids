@@ -441,20 +441,25 @@ export const ParentalGateModal: React.FC<{
 
   const expectedAnswer = num1 + num2;
 
+  const regenerateChallenge = () => {
+    setNum1(Math.floor(Math.random() * 6) + 4);
+    setNum2(Math.floor(Math.random() * 5) + 3);
+  };
+
   const handleVerify = (e: React.FormEvent) => {
     e.preventDefault();
     if (parseInt(userAnswer.trim(), 10) === expectedAnswer) {
       playSuccessSound();
       setUserAnswer('');
       setHasError(false);
-      setNum1(Math.floor(Math.random() * 6) + 4);
-      setNum2(Math.floor(Math.random() * 5) + 3);
+      regenerateChallenge();
       onSuccess();
       onClose();
     } else {
       playPopSound();
       setHasError(true);
       setUserAnswer('');
+      regenerateChallenge();
     }
   };
 

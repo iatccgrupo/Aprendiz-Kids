@@ -19,41 +19,29 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { ChildProfile } from '@/lib/types';
-import { AVATAR_OPTIONS, INITIAL_LEVELS } from '@/lib/game-data';
+import { AVATAR_OPTIONS } from '@/lib/game-data';
 import { playPopSound, playSuccessSound } from '@/lib/sound';
 import {
   signUpWithSupabase,
   signInWithSupabase,
   saveChildProfileWithResultToSupabase,
-  loadChildWorkspaceFromSupabase,
-  saveInitialProgressForChildToSupabase,
-  RestoredWorkspace,
 } from '@/lib/supabase/service';
-import { getSupabaseClient, isSupabaseConfigured } from '@/lib/supabase/client';
+import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 interface AuthScreenProps {
-  onCompleteProfile: (profile: ChildProfile, restoredWorkspace?: RestoredWorkspace) => void;
+  onCompleteProfile: (profile: ChildProfile) => void;
   onSkipToPlay?: () => void;
   existingProfile?: ChildProfile | null;
-  initialStep?: 'auth' | 'child_profile';
-  activeParentId?: string;
 }
 
-export const AuthScreen: React.FC<AuthScreenProps> = ({
-  onCompleteProfile,
-  existingProfile,
-  initialStep = 'auth',
-  activeParentId = '',
-}) => {
+export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => {
   // Mode: register (Cadastro) or login (Entrar)
   const [mode, setMode] = useState<'register' | 'login'>('register');
   // Step 1: Login & Senha (MUST BE THE FIRST SCREEN)
   // Step 2: Perfil da Criança
-  const [step, setStep] = useState<'auth' | 'child_profile'>(
-    initialStep === 'child_profile' && existingProfile ? 'child_profile' : 'auth'
-  );
+  const [step, setStep] = useState<'auth' | 'child_profile'>('auth');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [parentId, setParentId] = useState<string>(activeParentId);
+  const [parentId, setParentId] = useState<string>('');
 
   // Parent credentials
   const [parentName, setParentName] = useState('');
@@ -64,14 +52,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [authError, setAuthError] = useState('');
 
   // Child profile setup (Step 2)
-  const [childName, setChildName] = useState(existingProfile?.name || '');
-  const [selectedAvatarId, setSelectedAvatarId] = useState(existingProfile?.avatarId || 'fox');
-  const [customPhotoUrl, setCustomPhotoUrl] = useState<string | null>(
-    existingProfile?.avatarCustomUrl || null
-  );
-  const [ageGroup, setAgeGroup] = useState(
-    existingProfile?.ageGroup || '5 a 6 anos (1º Ano)'
-  );
+  const [childName, setChildName] = useState('');
+  const [selectedAvatarId, setSelectedAvatarId] = useState('fox');
+  const [customPhotoUrl, setCustomPhotoUrl] = useState<string | null>(null);
+  const [ageGroup, setAgeGroup] = useState('5 a 6 anos (1º Ano)');
   const [nameError, setNameError] = useState('');
   const [childProfileError, setChildProfileError] = useState('');
 
@@ -123,7 +107,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
     try {
       let resolvedName = cleanName || 'Responsável';
-      let resolvedParentId = '';
 
       if (mode === 'register') {
         const result = await signUpWithSupabase(
@@ -141,7 +124,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         }
 
         if (result.userId) {
-          resolvedParentId = result.userId;
           setParentId(result.userId);
         }
         if (result.name) {
@@ -156,7 +138,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         }
 
         if (result.userId) {
-          resolvedParentId = result.userId;
           setParentId(result.userId);
         }
         if (result.name) {
@@ -171,7 +152,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         localStorage.setItem(
           'aventura_parent_account',
           JSON.stringify({
-            id: resolvedParentId,
             name: resolvedName,
             email: cleanEmail,
             loggedAt: new Date().toISOString(),
@@ -180,25 +160,15 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       } catch {}
 
       if (mode === 'login') {
-        // Buscar perfil da criança + etapas concluídas + medalhas direto do Supabase
-        if (resolvedParentId) {
-          const workspace = await loadChildWorkspaceFromSupabase(resolvedParentId);
-          if (workspace.child) {
-            onCompleteProfile(workspace.child, workspace);
-            return;
-          }
-        }
-
-        // Fallback local se ainda houver perfil salvo no dispositivo
+        // Check if there is an existing child profile
         try {
           const savedChild = localStorage.getItem('aventura_child_profile');
           if (savedChild) {
-            const parsed = JSON.parse(savedChild) as ChildProfile;
+            const parsed = JSON.parse(savedChild);
             onCompleteProfile(parsed);
             return;
           }
         } catch {}
-
         setStep('child_profile');
       } else {
         setStep('child_profile');
@@ -222,69 +192,30 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       return;
     }
     setNameError('');
-    setIsSubmitting(true);
 
-    try {
-      const isEditingExisting = Boolean(existingProfile);
-      const newProfile: ChildProfile = {
-        id: existingProfile?.id || 'child-' + Date.now(),
-        name: childName.trim(),
-        avatarId: selectedAvatarId,
-        avatarCustomUrl: customPhotoUrl || undefined,
-        ageGroup,
-        createdAt: existingProfile?.createdAt || new Date().toLocaleDateString('pt-BR'),
-      };
+    const newProfile: ChildProfile = {
+      id: 'child-' + Date.now(),
+      name: childName.trim(),
+      avatarId: selectedAvatarId,
+      avatarCustomUrl: customPhotoUrl || undefined,
+      ageGroup,
+      createdAt: new Date().toLocaleDateString('pt-BR'),
+    };
 
-      let resolvedParentId = parentId;
-      if (!resolvedParentId) {
-        const supabase = getSupabaseClient();
-        if (supabase) {
-          const {
-            data: { session },
-          } = await supabase.auth.getSession();
-          if (session?.user?.id) {
-            resolvedParentId = session.user.id;
-            setParentId(session.user.id);
-          }
-        }
-      }
-
-      let finalProfile = newProfile;
-
-      // Sincronizar com tabela children do Supabase se o parentId estiver ativo
-      if (resolvedParentId) {
-        const saveResult = await saveChildProfileWithResultToSupabase(
-          newProfile,
-          resolvedParentId
+    // Sincronizar com tabela children do Supabase se o parentId estiver ativo
+    if (parentId) {
+      const saveResult = await saveChildProfileWithResultToSupabase(newProfile, parentId);
+      if (!saveResult.success) {
+        setChildProfileError(
+          saveResult.error ||
+            'Não foi possível salvar o perfil da criança no banco Supabase.'
         );
-        if (!saveResult.success) {
-          setChildProfileError(
-            saveResult.error ||
-              'Não foi possível salvar o perfil da criança no banco Supabase.'
-          );
-          return;
-        }
-        if (saveResult.child) {
-          finalProfile = saveResult.child;
-        }
-
-        // Ao criar novo perfil, sincroniza as fases iniciais na tabela game_progress
-        if (!isEditingExisting) {
-          await saveInitialProgressForChildToSupabase(finalProfile.id, INITIAL_LEVELS);
-        }
+        return;
       }
-
-      playSuccessSound();
-      onCompleteProfile(finalProfile);
-    } catch (err: unknown) {
-      setChildProfileError(
-        err instanceof Error
-          ? err.message
-          : 'Erro inesperado ao salvar o perfil da criança.'
-      );
-    } finally {
-      setIsSubmitting(false);
     }
+
+    playSuccessSound();
+    onCompleteProfile(newProfile);
   };
 
   return (
@@ -707,9 +638,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                           {avatar.name}
                         </span>
                         {isSelected && (
-                          <div className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-amber-500 text-white shadow-xs">
+                          <span className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-amber-500 text-white shadow-xs">
                             <Check className="h-3 w-3 stroke-[3]" />
-                          </div>
+                          </span>
                         )}
                       </button>
                     );
@@ -719,9 +650,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 {/* Upload Photo Alternative */}
                 <div className="mt-3 flex items-center gap-3 p-3 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50">
                   <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-slate-700 hover:text-blue-600 transition-colors">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-600">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-100 text-blue-600">
                       <Camera className="h-4 w-4" />
-                    </div>
+                    </span>
                     <span>Ou faça upload da foto da criança</span>
                     <input
                       type="file"
@@ -754,17 +685,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               <div className="pt-2">
                 <button
                   type="submit"
-                  disabled={isSubmitting}
-                  className="w-full h-16 rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white font-extrabold text-lg shadow-[0_5px_0_#c2410c] hover:brightness-105 active:translate-y-1 active:shadow-[0_1px_0_#c2410c] transition-all flex items-center justify-center gap-3 cursor-pointer disabled:opacity-75"
+                  className="w-full h-16 rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white font-extrabold text-lg shadow-[0_5px_0_#c2410c] hover:brightness-105 active:translate-y-1 active:shadow-[0_1px_0_#c2410c] transition-all flex items-center justify-center gap-3 cursor-pointer"
                 >
                   <Sparkles className="h-6 w-6 animate-spin" style={{ animationDuration: '6s' }} />
-                  <span>
-                    {isSubmitting
-                      ? 'Salvando perfil...'
-                      : existingProfile
-                      ? 'Salvar Alterações e Continuar'
-                      : 'Entrar no Mapa de Aventuras!'}
-                  </span>
+                  <span>Entrar no Mapa de Aventuras!</span>
                   <ArrowRight className="h-6 w-6" />
                 </button>
               </div>

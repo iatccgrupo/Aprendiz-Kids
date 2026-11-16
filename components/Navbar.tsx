@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Image from 'next/image';
-import { Compass, Sparkles, User, Award, ShieldCheck, Volume2, VolumeX, BookOpen } from 'lucide-react';
+import { Compass, Sparkles, User, Award, ShieldCheck, Volume2, VolumeX } from 'lucide-react';
 import { ChildProfile, ScreenState } from '@/lib/types';
 import { AVATAR_OPTIONS } from '@/lib/game-data';
 
@@ -37,7 +37,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           onClick={() => onNavigate(childProfile ? 'map' : 'auth')}
           className="group flex items-center gap-3 text-left transition-transform active:scale-95 cursor-pointer"
         >
-          <div className="relative h-12 w-14 sm:h-13 sm:w-16 shrink-0 overflow-hidden rounded-xl bg-amber-50 p-0.5 border border-amber-200 shadow-xs">
+          <span className="relative block h-12 w-14 sm:h-13 sm:w-16 shrink-0 overflow-hidden rounded-xl bg-amber-50 p-0.5 border border-amber-200 shadow-xs">
             <Image
               src="/assets/aistudio/logo_aprendiz_kids_088c8185.jpg"
               alt="Aprendiz Kids Logo"
@@ -46,12 +46,12 @@ export const Navbar: React.FC<NavbarProps> = ({
               referrerPolicy="no-referrer"
               priority
             />
-          </div>
-          <div className="leading-tight">
+          </span>
+          <span className="block leading-tight">
             <span className="block text-xl font-black tracking-tight text-blue-900 sm:text-2xl font-display">
               Aprendiz <span className="text-amber-500">Kids</span>
             </span>
-          </div>
+          </span>
         </button>
 
         {/* Zone 2: Navigation Links */}
@@ -78,19 +78,6 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Sparkles className="h-4 w-4 text-amber-500" />
             <span className="whitespace-nowrap">Atividade Sonora</span>
-          </button>
-
-          <button
-            onClick={() => onNavigate('library')}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-              currentScreen === 'library'
-                ? 'bg-sky-50 text-sky-800 shadow-xs ring-1 ring-sky-200'
-                : 'text-slate-600 hover:text-sky-600 hover:bg-slate-50'
-            }`}
-          >
-            <BookOpen className="h-4 w-4 text-sky-500" />
-            <span className="hidden lg:inline">Biblioteca de Histórias</span>
-            <span className="lg:hidden">Livros</span>
           </button>
 
           <button
@@ -136,7 +123,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-full bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-200 shadow-xs hover:border-amber-400 transition-all active:scale-95 cursor-pointer"
                 title="Ver perfil da criança"
               >
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-400 text-lg shadow-inner">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-400 text-lg shadow-inner">
                   {childProfile.avatarCustomUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
@@ -147,15 +134,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                   ) : (
                     <span>{avatarObj.emoji}</span>
                   )}
-                </div>
-                <div className="text-left">
+                </span>
+                <span className="block text-left">
                   <span className="block text-xs font-bold text-slate-800 leading-none truncate max-w-[80px] sm:max-w-[120px]">
                     {childProfile.name}
                   </span>
                   <span className="text-[11px] font-extrabold text-amber-700 flex items-center gap-0.5">
                     ★ {totalStars}
                   </span>
-                </div>
+                </span>
               </button>
 
               {onLogout && (
@@ -199,15 +186,6 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <Sparkles className="h-4 w-4" />
           <span>Atividade</span>
-        </button>
-        <button
-          onClick={() => onNavigate('library')}
-          className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-bold rounded-lg transition-colors ${
-            currentScreen === 'library' ? 'text-sky-600' : 'text-slate-500'
-          }`}
-        >
-          <BookOpen className="h-4 w-4" />
-          <span>Livros</span>
         </button>
         <button
           onClick={() => onNavigate('progress')}
