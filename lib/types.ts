@@ -56,7 +56,7 @@ export interface Medal {
   title: string;
   description: string;
   icon: string;
-  category: 'alfabeto' | 'conquista' | 'dedicacao' | 'aventura';
+  category: 'alfabeto' | 'conquista' | 'dedicacao' | 'aventura' | 'leitura';
   unlocked: boolean;
   unlockedDate?: string;
   color: string;

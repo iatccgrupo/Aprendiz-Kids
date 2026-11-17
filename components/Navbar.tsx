@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Image from 'next/image';
-import { Compass, Sparkles, User, Award, ShieldCheck, Volume2, VolumeX } from 'lucide-react';
+import { Compass, Sparkles, User, Award, ShieldCheck, Volume2, VolumeX, BookOpen, Mic } from 'lucide-react';
 import { ChildProfile, ScreenState } from '@/lib/types';
 import { AVATAR_OPTIONS } from '@/lib/game-data';
 
@@ -14,6 +14,7 @@ interface NavbarProps {
   soundEnabled: boolean;
   onToggleSound: () => void;
   onOpenParentGate: () => void;
+  onOpenLiveVoice?: () => void;
   onLogout?: () => void;
 }
 
@@ -25,6 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   soundEnabled,
   onToggleSound,
   onOpenParentGate,
+  onOpenLiveVoice,
   onLogout,
 }) => {
   const avatarObj = AVATAR_OPTIONS.find((a) => a.id === childProfile?.avatarId) || AVATAR_OPTIONS[0];
@@ -55,10 +57,10 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         {/* Zone 2: Navigation Links */}
-        <nav className="hidden md:flex items-center gap-1.5 lg:gap-2">
+        <nav className="hidden md:flex items-center gap-1 lg:gap-2">
           <button
             onClick={() => onNavigate(childProfile ? 'map' : 'auth')}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
               currentScreen === 'map'
                 ? 'bg-blue-50 text-blue-700 shadow-xs ring-1 ring-blue-200'
                 : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'
@@ -69,8 +71,21 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <button
+            onClick={() => onNavigate('library')}
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+              currentScreen === 'library'
+                ? 'bg-sky-50 text-sky-800 shadow-xs ring-1 ring-sky-200'
+                : 'text-slate-600 hover:text-sky-700 hover:bg-slate-50'
+            }`}
+          >
+            <BookOpen className="h-4 w-4 text-sky-500" />
+            <span className="hidden xl:inline whitespace-nowrap">Biblioteca de Histórias</span>
+            <span className="xl:hidden whitespace-nowrap">Livros</span>
+          </button>
+
+          <button
             onClick={() => onNavigate('activity')}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
               currentScreen === 'activity' || currentScreen === 'feedback'
                 ? 'bg-amber-50 text-amber-800 shadow-xs ring-1 ring-amber-200'
                 : 'text-slate-600 hover:text-amber-600 hover:bg-slate-50'
@@ -82,7 +97,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={() => onNavigate('progress')}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
               currentScreen === 'progress'
                 ? 'bg-emerald-50 text-emerald-800 shadow-xs ring-1 ring-emerald-200'
                 : 'text-slate-600 hover:text-emerald-600 hover:bg-slate-50'
@@ -94,7 +109,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <button
             onClick={onOpenParentGate}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-bold transition-all ${
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer ${
               currentScreen === 'dashboard'
                 ? 'bg-purple-50 text-purple-800 shadow-xs ring-1 ring-purple-200'
                 : 'text-slate-600 hover:text-purple-600 hover:bg-slate-50'
@@ -105,8 +120,21 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         </nav>
 
-        {/* Zone 3: Audio Control & Child Profile / Auth Action */}
+        {/* Zone 3: Audio Control, Live Voice & Child Profile / Auth Action */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {onOpenLiveVoice && (
+            <button
+              type="button"
+              onClick={onOpenLiveVoice}
+              aria-label="Conversar por voz em tempo real com a Professora Bia"
+              className="flex items-center gap-1.5 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-black text-rose-700 hover:bg-rose-100 transition-colors shadow-xs active:scale-95 cursor-pointer whitespace-nowrap"
+              title="Conversar por voz ao vivo com a Professora Bia"
+            >
+              <Mic className="h-4 w-4 text-rose-600" />
+              <span className="hidden sm:inline">Voz ao Vivo</span>
+            </button>
+          )}
+
           <button
             onClick={onToggleSound}
             aria-label={soundEnabled ? 'Silenciar áudio' : 'Ativar áudio'}
@@ -168,10 +196,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
 
       {/* Mobile Sub-Navigation Bar */}
-      <div className="flex md:hidden items-center justify-around border-t border-slate-100 bg-white/90 px-2 py-2">
+      <div className="flex md:hidden items-center justify-around border-t border-slate-100 bg-white/90 px-1 py-2">
         <button
           onClick={() => onNavigate(childProfile ? 'map' : 'auth')}
-          className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-bold rounded-lg transition-colors ${
+          className={`flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
             currentScreen === 'map' ? 'text-blue-600' : 'text-slate-500'
           }`}
         >
@@ -179,8 +207,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           <span>Trilha</span>
         </button>
         <button
+          onClick={() => onNavigate('library')}
+          className={`flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+            currentScreen === 'library' ? 'text-sky-600' : 'text-slate-500'
+          }`}
+        >
+          <BookOpen className="h-4 w-4" />
+          <span>Livros</span>
+        </button>
+        <button
           onClick={() => onNavigate('activity')}
-          className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-bold rounded-lg transition-colors ${
+          className={`flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
             currentScreen === 'activity' || currentScreen === 'feedback' ? 'text-amber-600' : 'text-slate-500'
           }`}
         >
@@ -189,7 +226,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
         <button
           onClick={() => onNavigate('progress')}
-          className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-bold rounded-lg transition-colors ${
+          className={`flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
             currentScreen === 'progress' ? 'text-emerald-600' : 'text-slate-500'
           }`}
         >
@@ -198,12 +235,12 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
         <button
           onClick={onOpenParentGate}
-          className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[11px] font-bold rounded-lg transition-colors ${
+          className={`flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
             currentScreen === 'dashboard' ? 'text-purple-600' : 'text-slate-500'
           }`}
         >
           <ShieldCheck className="h-4 w-4" />
-          <span>Responsável</span>
+          <span>Pais</span>
         </button>
       </div>
     </header>

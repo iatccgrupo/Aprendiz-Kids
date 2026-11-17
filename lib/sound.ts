@@ -151,6 +151,20 @@ const FEMALE_PT_VOICE_KEYWORDS = [
   'inês',
   'fernanda',
   'helena',
+  'alice',
+  'sofia',
+  'lara',
+  'beatriz',
+  'clara',
+  'mariana',
+  'julia',
+  'júlia',
+  'ana',
+  'paula',
+  'carolina',
+  'aoede',
+  'kore',
+  'leda',
   'google português do brasil',
   'google portugues do brasil',
   'female',
@@ -178,6 +192,14 @@ const MALE_PT_VOICE_KEYWORDS = [
   'lucas',
   'ricardo',
   'donato',
+  'tiago',
+  'gabriel',
+  'pedro',
+  'mateus',
+  'bruno',
+  'marcos',
+  'paulo',
+  'miguel',
   'male',
   'masculino',
   'masculina',
@@ -192,19 +214,19 @@ function scorePortugueseFemaleVoice(voice: SpeechSynthesisVoice): number {
   let score = 0;
 
   if (lang === 'pt-br' || lang === 'pt_br') {
-    score += 200;
+    score += 220;
   } else if (lang.startsWith('pt')) {
-    score += 80;
+    score += 90;
   } else {
     return -1000;
   }
 
   if (FEMALE_PT_VOICE_KEYWORDS.some((kw) => name.includes(kw))) {
-    score += 120;
+    score += 140;
   }
 
   if (MALE_PT_VOICE_KEYWORDS.some((kw) => name.includes(kw))) {
-    score -= 150;
+    score -= 180;
   }
 
   if (name.includes('natural') || name.includes('neural') || name.includes('online')) {
@@ -266,9 +288,78 @@ function selectPreferredPtBrFemaleVoice(
   return bestScore > 0 ? bestVoice : null;
 }
 
+const TTS_MEMORY_CACHE_LIMIT = 60;
+const TTS_LOCAL_STORAGE_KEY = 'aventura_live_kore_cache_v2';
+const TTS_LOCAL_MAX_ENTRIES = 18;
+const TTS_LOCAL_MAX_ITEM_CHARS = 450000;
+
+interface PersistedTtsEntry {
+  k: string;
+  v: string;
+  t: number;
+}
+
 const ttsAudioCache = new Map<string, string>();
+const ttsInFlightRequests = new Map<string, Promise<string | null>>();
 let activeTtsAudio: HTMLAudioElement | null = null;
 let activeTtsObjectUrl: string | null = null;
+let activeTtsRequestId = 0;
+
+function readFromLocalTtsCache(cacheKey: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(TTS_LOCAL_STORAGE_KEY);
+    if (!raw) return null;
+    const entries = JSON.parse(raw) as PersistedTtsEntry[];
+    if (!Array.isArray(entries)) return null;
+    const match = entries.find((entry) => entry.k === cacheKey);
+    return match?.v || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeToMemoryTtsCache(cacheKey: string, audioBase64: string): void {
+  if (ttsAudioCache.size >= TTS_MEMORY_CACHE_LIMIT) {
+    const oldestKey = ttsAudioCache.keys().next().value;
+    if (oldestKey) {
+      ttsAudioCache.delete(oldestKey);
+    }
+  }
+  ttsAudioCache.set(cacheKey, audioBase64);
+}
+
+function writeToLocalTtsCache(cacheKey: string, audioBase64: string): void {
+  if (typeof window === 'undefined') return;
+  if (audioBase64.length > TTS_LOCAL_MAX_ITEM_CHARS) return;
+
+  try {
+    const raw = localStorage.getItem(TTS_LOCAL_STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as PersistedTtsEntry[]) : [];
+    const entries = Array.isArray(parsed)
+      ? parsed.filter((entry) => entry.k !== cacheKey)
+      : [];
+
+    entries.push({ k: cacheKey, v: audioBase64, t: Date.now() });
+
+    while (entries.length > TTS_LOCAL_MAX_ENTRIES) {
+      entries.shift();
+    }
+
+    try {
+      localStorage.setItem(TTS_LOCAL_STORAGE_KEY, JSON.stringify(entries));
+    } catch {
+      const trimmed = entries.slice(-6);
+      try {
+        localStorage.setItem(TTS_LOCAL_STORAGE_KEY, JSON.stringify(trimmed));
+      } catch {
+        // Ignora se localStorage estiver indisponível
+      }
+    }
+  } catch {
+    // Ignore storage read/write errors
+  }
+}
 
 function stopActiveTtsAudio(): void {
   if (activeTtsAudio) {
@@ -293,6 +384,11 @@ function stopActiveTtsAudio(): void {
   }
 }
 
+export const stopSpeaking = (): void => {
+  activeTtsRequestId += 1;
+  stopActiveTtsAudio();
+};
+
 function base64ToWavBlob(base64Data: string, mimeType: string = 'audio/wav'): Blob {
   const binaryString = window.atob(base64Data);
   const length = binaryString.length;
@@ -303,9 +399,18 @@ function base64ToWavBlob(base64Data: string, mimeType: string = 'audio/wav'): Bl
   return new Blob([bytes], { type: mimeType });
 }
 
-function playBase64Audio(base64Data: string, mimeType: string = 'audio/wav'): Promise<boolean> {
+function playBase64Audio(
+  base64Data: string,
+  mimeType: string = 'audio/wav',
+  requestId?: number
+): Promise<boolean> {
   return new Promise((resolve) => {
     try {
+      if (requestId !== undefined && requestId !== activeTtsRequestId) {
+        resolve(true);
+        return;
+      }
+
       stopActiveTtsAudio();
 
       const blob = base64ToWavBlob(base64Data, mimeType);
@@ -329,17 +434,27 @@ function playBase64Audio(base64Data: string, mimeType: string = 'audio/wav'): Pr
         try {
           URL.revokeObjectURL(objectUrl);
         } catch {}
+        if (requestId !== undefined && requestId !== activeTtsRequestId) {
+          resolve(true);
+          return;
+        }
         resolve(playedOk);
       };
 
-      const safetyTimer = setTimeout(() => finish(true), 20000);
+      const safetyTimer = setTimeout(() => finish(true), 25000);
 
       audio.onended = () => finish(true);
       audio.onerror = () => finish(false);
 
       const playPromise = audio.play();
       if (playPromise !== undefined) {
-        playPromise.catch(() => finish(false));
+        playPromise.catch(() => {
+          if (requestId !== undefined && requestId !== activeTtsRequestId) {
+            finish(true);
+          } else {
+            finish(false);
+          }
+        });
       }
     } catch {
       resolve(false);
@@ -349,14 +464,23 @@ function playBase64Audio(base64Data: string, mimeType: string = 'audio/wav'): Pr
 
 async function speakWithWebSpeechFallback(
   text: string,
-  slowRate: boolean = false
+  slowRate: boolean = false,
+  requestId?: number
 ): Promise<void> {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     return;
   }
 
+  if (requestId !== undefined && requestId !== activeTtsRequestId) {
+    return;
+  }
+
   try {
     const voices = await getAvailableVoicesAsync();
+    if (requestId !== undefined && requestId !== activeTtsRequestId) {
+      return;
+    }
+
     const preferredVoice = selectPreferredPtBrFemaleVoice(voices);
 
     await new Promise<void>((resolve) => {
@@ -368,14 +492,13 @@ async function speakWithWebSpeechFallback(
         resolve();
       };
 
-      const safetyTimer = setTimeout(done, 12000);
+      const safetyTimer = setTimeout(done, 20000);
 
-      window.speechSynthesis.cancel(); // Stop any pending utterance
+      window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = preferredVoice?.lang || 'pt-BR';
-      // Tom mais alegre, infantil e animado para crianças
-      utterance.pitch = 1.22;
-      utterance.rate = slowRate ? 0.9 : 1.05;
+      utterance.pitch = 1.24;
+      utterance.rate = slowRate ? 0.92 : 1.05;
       utterance.volume = 1.0;
 
       if (preferredVoice) {
@@ -392,62 +515,156 @@ async function speakWithWebSpeechFallback(
   }
 }
 
+export type GeminiFemaleVoice = 'Kore' | 'Aoede';
+export const DEFAULT_GEMINI_TTS_VOICE: GeminiFemaleVoice = 'Kore';
+
+function buildUnifiedLiveCacheKey(
+  text: string,
+  slowRate: boolean,
+  voiceName: GeminiFemaleVoice
+): string {
+  return `live:${voiceName}:${slowRate ? 'slow' : 'normal'}:${text.trim()}`;
+}
+
+async function fetchAndCacheGeminiLiveSpeech(
+  text: string,
+  slowRate: boolean,
+  voiceName: GeminiFemaleVoice
+): Promise<string | null> {
+  const cleanText = text.trim();
+  if (!cleanText || typeof window === 'undefined') return null;
+
+  const cacheKey = buildUnifiedLiveCacheKey(cleanText, slowRate, voiceName);
+
+  // 1. Cache instantâneo em RAM
+  const fromMemory = ttsAudioCache.get(cacheKey);
+  if (fromMemory) {
+    return fromMemory;
+  }
+
+  // 2. Cache persistente em localStorage
+  const fromLocal = readFromLocalTtsCache(cacheKey);
+  if (fromLocal) {
+    writeToMemoryTtsCache(cacheKey, fromLocal);
+    return fromLocal;
+  }
+
+  // 3. Deduplicação de requisição já em andamento
+  const existingInFlight = ttsInFlightRequests.get(cacheKey);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const requestPromise = (async (): Promise<string | null> => {
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await fetch('/api/live-speech', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            text: cleanText,
+            slowRate,
+            voiceName,
+          }),
+        });
+
+        if (response.status === 503) {
+          // GEMINI_API_KEY ausente -> acionar fallback apenas se necessário
+          return null;
+        }
+
+        if (response.ok) {
+          const data = (await response.json()) as {
+            audioBase64?: string;
+            mimeType?: string;
+          };
+
+          if (data.audioBase64) {
+            writeToMemoryTtsCache(cacheKey, data.audioBase64);
+            writeToLocalTtsCache(cacheKey, data.audioBase64);
+            return data.audioBase64;
+          }
+        }
+      } catch {
+        // Tenta novamente em erro transitório
+      }
+
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+    return null;
+  })().finally(() => {
+    ttsInFlightRequests.delete(cacheKey);
+  });
+
+  ttsInFlightRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
+ * Pré-carrega em segundo plano áudio gerado pela Gemini Live API (gemini-3.8-live)
+ * com a voz feminina entusiasmada 'Kore'.
+ */
+export const prefetchSpeechInPortuguese = (
+  text: string,
+  slowRate: boolean = false,
+  voiceName: GeminiFemaleVoice = DEFAULT_GEMINI_TTS_VOICE
+): void => {
+  if (typeof window === 'undefined' || !text.trim()) return;
+  void fetchAndCacheGeminiLiveSpeech(text, slowRate, voiceName);
+};
+
 export const speakInPortuguese = async (
   text: string,
-  slowRate: boolean = false
+  slowRate: boolean = false,
+  voiceName: GeminiFemaleVoice = DEFAULT_GEMINI_TTS_VOICE,
+  _context?: 'activity' | 'storybook'
 ): Promise<void> => {
+  void _context;
   if (typeof window === 'undefined' || !text.trim()) {
     return;
   }
 
+  activeTtsRequestId += 1;
+  const currentRequestId = activeTtsRequestId;
   stopActiveTtsAudio();
 
-  const cacheKey = `${slowRate ? 'slow' : 'normal'}:${text.trim()}`;
-  const cachedBase64 = ttsAudioCache.get(cacheKey);
-  if (cachedBase64) {
-    const playedFromCache = await playBase64Audio(cachedBase64, 'audio/wav');
-    if (playedFromCache) {
+  const audioBase64 = await fetchAndCacheGeminiLiveSpeech(
+    text,
+    slowRate,
+    voiceName
+  );
+
+  if (currentRequestId !== activeTtsRequestId) {
+    return;
+  }
+
+  if (audioBase64) {
+    const played = await playBase64Audio(
+      audioBase64,
+      'audio/wav',
+      currentRequestId
+    );
+    if (played || currentRequestId !== activeTtsRequestId) {
       return;
     }
   }
 
-  try {
-    const response = await fetch('/api/tts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ text: text.trim(), slowRate }),
-    });
-
-    if (response.ok) {
-      const data = (await response.json()) as {
-        audioBase64?: string;
-        mimeType?: string;
-      };
-
-      if (data.audioBase64) {
-        if (ttsAudioCache.size >= 40) {
-          const oldestKey = ttsAudioCache.keys().next().value;
-          if (oldestKey) {
-            ttsAudioCache.delete(oldestKey);
-          }
-        }
-        ttsAudioCache.set(cacheKey, data.audioBase64);
-
-        const played = await playBase64Audio(
-          data.audioBase64,
-          data.mimeType || 'audio/wav'
-        );
-        if (played) {
-          return;
-        }
-      }
-    }
-  } catch {
-    // Fallback automático para Web Speech API em caso de erro de rede ou ausência da chave
-  }
-
-  await speakWithWebSpeechFallback(text, slowRate);
+  await speakWithWebSpeechFallback(text, slowRate, currentRequestId);
 };
+
+export function buildCorrectFeedbackSpeech(
+  childName: string,
+  targetLetter: string
+): string {
+  return `Sensacional, ${childName}! Você acertou a letrinha ${targetLetter}!`;
+}
+
+export function buildRetryFeedbackSpeech(childName: string): string {
+  return `Quase lá, ${childName}! Que tal tentar de novo?`;
+}
 

@@ -19,7 +19,14 @@ import {
 } from 'lucide-react';
 import { ChildProfile, Storybook } from '@/lib/types';
 import { CURATED_STORYBOOKS, STORYBOOK_COVERS } from '@/lib/storybook-data';
-import { playPopSound, playSuccessSound, speakInPortuguese } from '@/lib/sound';
+import {
+  DEFAULT_GEMINI_TTS_VOICE,
+  playPopSound,
+  playSuccessSound,
+  prefetchSpeechInPortuguese,
+  speakInPortuguese,
+  stopSpeaking,
+} from '@/lib/sound';
 
 interface StorybookScreenProps {
   childProfile: ChildProfile | null;
@@ -55,6 +62,7 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
   const [selectedBook, setSelectedBook] = useState<Storybook | null>(null);
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
   const [isCompletedView, setIsCompletedView] = useState<boolean>(false);
+  const [justEarnedStars, setJustEarnedStars] = useState<boolean>(false);
   const [isNarrating, setIsNarrating] = useState<boolean>(false);
   const [slowMode, setSlowMode] = useState<boolean>(false);
 
@@ -80,16 +88,37 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
   const narrateCurrentPage = useCallback(
     async (text: string, useSlow: boolean) => {
       setIsNarrating(true);
-      await speakInPortuguese(text, useSlow);
+      await speakInPortuguese(
+        text,
+        useSlow,
+        DEFAULT_GEMINI_TTS_VOICE,
+        'storybook'
+      );
       setIsNarrating(false);
     },
     []
   );
 
-  // Narrar automaticamente ao abrir um livro ou virar de página
+  // Narrar automaticamente ao abrir um livro ou virar de página + pré-carregar próxima página
   useEffect(() => {
     if (!selectedBook || isCompletedView || !activePage || !soundEnabled) {
       return;
+    }
+
+    const nextPage = selectedBook.pages[currentPageIndex + 1];
+    if (nextPage?.text) {
+      prefetchSpeechInPortuguese(
+        nextPage.text,
+        slowMode,
+        DEFAULT_GEMINI_TTS_VOICE
+      );
+    } else {
+      const readerName = childProfile?.name ? `, ${childProfile.name}` : '';
+      prefetchSpeechInPortuguese(
+        `Parabéns${readerName}! Você terminou a história ${selectedBook.title} e ganhou três estrelas douradas!`,
+        false,
+        DEFAULT_GEMINI_TTS_VOICE
+      );
     }
 
     let cancelled = false;
@@ -103,20 +132,30 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [selectedBook, currentPageIndex, isCompletedView, activePage, soundEnabled, slowMode, narrateCurrentPage]);
+  }, [selectedBook, currentPageIndex, isCompletedView, activePage, soundEnabled, slowMode, narrateCurrentPage, childProfile?.name]);
+
+  // Interromper narração ao sair da Biblioteca de Histórias
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+    };
+  }, []);
 
   const handleOpenBook = (book: Storybook) => {
     playPopSound();
     setSelectedBook(book);
     setCurrentPageIndex(0);
     setIsCompletedView(false);
+    setJustEarnedStars(false);
   };
 
   const handleCloseReader = () => {
+    stopSpeaking();
     playPopSound();
     setSelectedBook(null);
     setCurrentPageIndex(0);
     setIsCompletedView(false);
+    setJustEarnedStars(false);
     setIsNarrating(false);
   };
 
@@ -137,6 +176,8 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
     }
 
     // Última página: concluir leitura e recompensar
+    const wasFirstRead = !completedBookIds.includes(selectedBook.id);
+    setJustEarnedStars(wasFirstRead);
     setIsCompletedView(true);
     if (soundEnabled) {
       playSuccessSound();
@@ -158,7 +199,9 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
       setTimeout(() => {
         void speakInPortuguese(
           `Parabéns${readerName}! Você terminou a história ${selectedBook.title} e ganhou três estrelas douradas!`,
-          false
+          false,
+          DEFAULT_GEMINI_TTS_VOICE,
+          'storybook'
         );
       }, 650);
     }
@@ -181,7 +224,10 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
         }),
       });
 
-      const data = (await res.json()) as { book?: Storybook; error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        book?: Storybook;
+        error?: string;
+      };
 
       if (!res.ok || !data.book) {
         setGenerationError(
@@ -292,7 +338,11 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
               <div className="flex items-center gap-2 text-amber-600 font-extrabold text-lg">
                 <Star className="h-6 w-6 fill-amber-400 text-amber-500" />
                 <span className="tabular-nums">
-                  {isAlreadyRead ? 'Livro registrado no seu diário' : '+3 estrelas ganhas'}
+                  {justEarnedStars
+                    ? '+3 estrelas ganhas!'
+                    : isAlreadyRead
+                    ? 'Livro registrado no seu diário'
+                    : '+3 estrelas ganhas!'}
                 </span>
               </div>
               <span aria-hidden="true" className="text-slate-300">·</span>
@@ -355,6 +405,12 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
                         referrerPolicy="no-referrer"
                         priority
                       />
+                      <div className="absolute bottom-3 right-3 flex items-center gap-2 rounded-xl bg-slate-900/75 px-3 py-1.5 text-xs font-extrabold text-white backdrop-blur-sm">
+                        <span aria-hidden="true">{activePage.sceneEmoji}</span>
+                        <span>
+                          Cena {activePage.pageNumber} de {totalPages}
+                        </span>
+                      </div>
                     </div>
                   ) : (
                     <div

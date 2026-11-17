@@ -1,10 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Image from 'next/image';
 import {
   Sparkles,
-  Shield,
   User,
   Camera,
   ArrowRight,
@@ -15,33 +14,62 @@ import {
   Mail,
   Eye,
   EyeOff,
-  UserCheck,
   AlertCircle,
+  Trophy,
 } from 'lucide-react';
-import { ChildProfile } from '@/lib/types';
-import { AVATAR_OPTIONS } from '@/lib/game-data';
+import { ChildProfile, LevelInfo, Medal } from '@/lib/types';
+import { AVATAR_OPTIONS, INITIAL_LEVELS, INITIAL_MEDALS } from '@/lib/game-data';
 import { playPopSound, playSuccessSound } from '@/lib/sound';
 import {
   signUpWithSupabase,
   signInWithSupabase,
   saveChildProfileWithResultToSupabase,
+  loadChildWorkspaceFromSupabase,
+  getActiveSessionWorkspace,
+  getCurrentSupabaseUserId,
+  saveInitialProgressForChildToSupabase,
+  saveLocalAccountWorkspace,
+  loadLocalAccountWorkspace,
+  mergeRestoredWorkspaces,
+  isUuid,
+  RestoredWorkspace,
 } from '@/lib/supabase/service';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 interface AuthScreenProps {
-  onCompleteProfile: (profile: ChildProfile) => void;
+  onCompleteProfile: (
+    profile: ChildProfile,
+    restoredWorkspace?: Partial<RestoredWorkspace>
+  ) => void;
   onSkipToPlay?: () => void;
   existingProfile?: ChildProfile | null;
+  initialStep?: 'auth' | 'child_profile';
+  currentLevels?: LevelInfo[];
+  currentMedals?: Medal[];
+  currentCompletedBookIds?: string[];
 }
 
-export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => {
+export const AuthScreen: React.FC<AuthScreenProps> = ({
+  onCompleteProfile,
+  existingProfile = null,
+  initialStep = 'auth',
+  currentLevels,
+  currentMedals,
+  currentCompletedBookIds,
+}) => {
   // Mode: register (Cadastro) or login (Entrar)
   const [mode, setMode] = useState<'register' | 'login'>('register');
   // Step 1: Login & Senha (MUST BE THE FIRST SCREEN)
   // Step 2: Perfil da Criança
-  const [step, setStep] = useState<'auth' | 'child_profile'>('auth');
+  const [step, setStep] = useState<'auth' | 'child_profile'>(initialStep);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [parentId, setParentId] = useState<string>('');
+  const [sessionWorkspace, setSessionWorkspace] = useState<{
+    userId: string;
+    email: string;
+    name: string;
+    workspace: RestoredWorkspace;
+  } | null>(null);
 
   // Parent credentials
   const [parentName, setParentName] = useState('');
@@ -51,13 +79,56 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
   const [showPassword, setShowPassword] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  // Child profile setup (Step 2)
-  const [childName, setChildName] = useState('');
-  const [selectedAvatarId, setSelectedAvatarId] = useState('fox');
-  const [customPhotoUrl, setCustomPhotoUrl] = useState<string | null>(null);
-  const [ageGroup, setAgeGroup] = useState('5 a 6 anos (1º Ano)');
+  // Child profile setup (Step 2) - pre-filled when editing or resuming
+  const [childName, setChildName] = useState(existingProfile?.name || '');
+  const [selectedAvatarId, setSelectedAvatarId] = useState(
+    existingProfile?.avatarId || 'fox'
+  );
+  const [customPhotoUrl, setCustomPhotoUrl] = useState<string | null>(
+    existingProfile?.avatarCustomUrl || null
+  );
+  const [ageGroup, setAgeGroup] = useState(
+    existingProfile?.ageGroup || '1º Ano Fundamental (6 a 7 anos)'
+  );
   const [nameError, setNameError] = useState('');
   const [childProfileError, setChildProfileError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    void getActiveSessionWorkspace().then((active) => {
+      if (cancelled || !active) return;
+      setSessionWorkspace(active);
+      setParentId((prev) => prev || active.userId);
+      setParentName((prev) => prev || active.name);
+      setParentEmail((prev) => prev || active.email);
+
+      const savedChild = active.workspace.child;
+      if (savedChild) {
+        setChildName((prev) => prev || savedChild.name);
+        setSelectedAvatarId((prev) =>
+          existingProfile?.avatarId ? prev : savedChild.avatarId
+        );
+        setCustomPhotoUrl((prev) =>
+          prev || savedChild.avatarCustomUrl || null
+        );
+        if (!existingProfile?.ageGroup && savedChild.ageGroup) {
+          setAgeGroup(savedChild.ageGroup);
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [existingProfile]);
+
+  const savedSessionChild =
+    existingProfile || sessionWorkspace?.workspace.child || null;
+  const savedWorkspaceLevels =
+    sessionWorkspace?.workspace.levels || currentLevels || INITIAL_LEVELS;
+  const savedCompletedPhasesCount = savedWorkspaceLevels.reduce(
+    (acc, lvl) => acc + lvl.phases.filter((p) => p.status === 'completed').length,
+    0
+  );
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -108,6 +179,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
     try {
       let resolvedName = cleanName || 'Responsável';
 
+      let activeUserId = '';
       if (mode === 'register') {
         const result = await signUpWithSupabase(
           cleanName,
@@ -124,6 +196,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
         }
 
         if (result.userId) {
+          activeUserId = result.userId;
           setParentId(result.userId);
         }
         if (result.name) {
@@ -138,6 +211,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
         }
 
         if (result.userId) {
+          activeUserId = result.userId;
           setParentId(result.userId);
         }
         if (result.name) {
@@ -152,6 +226,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
         localStorage.setItem(
           'aventura_parent_account',
           JSON.stringify({
+            userId: activeUserId || undefined,
             name: resolvedName,
             email: cleanEmail,
             loggedAt: new Date().toISOString(),
@@ -160,15 +235,51 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
       } catch {}
 
       if (mode === 'login') {
-        // Check if there is an existing child profile
-        try {
-          const savedChild = localStorage.getItem('aventura_child_profile');
-          if (savedChild) {
-            const parsed = JSON.parse(savedChild);
-            onCompleteProfile(parsed);
-            return;
+        // Restaurar nome da criança + etapas concluídas do Supabase e do backup local
+        const supabaseWorkspace = activeUserId
+          ? await loadChildWorkspaceFromSupabase(activeUserId)
+          : null;
+        const localWorkspace = loadLocalAccountWorkspace(cleanEmail);
+        const merged = supabaseWorkspace
+          ? mergeRestoredWorkspaces(supabaseWorkspace, localWorkspace)
+          : localWorkspace;
+
+        if (merged?.child) {
+          let restoredChild = merged.child;
+          if (activeUserId && !isUuid(restoredChild.id)) {
+            const syncChild = await saveChildProfileWithResultToSupabase(
+              restoredChild,
+              activeUserId
+            );
+            if (syncChild.success && syncChild.child) {
+              restoredChild = syncChild.child;
+            }
           }
-        } catch {}
+          if (activeUserId && isUuid(restoredChild.id)) {
+            await saveInitialProgressForChildToSupabase(
+              restoredChild.id,
+              merged.levels,
+              merged.medals,
+              merged.completedBookIds
+            );
+          }
+
+          saveLocalAccountWorkspace(cleanEmail, {
+            parentName: resolvedName,
+            parentId: activeUserId || undefined,
+            child: restoredChild,
+            levels: merged.levels,
+            medals: merged.medals,
+            completedBookIds: merged.completedBookIds,
+          });
+
+          onCompleteProfile(restoredChild, {
+            ...merged,
+            child: restoredChild,
+          });
+          return;
+        }
+
         setStep('child_profile');
       } else {
         setStep('child_profile');
@@ -192,30 +303,89 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
       return;
     }
     setNameError('');
+    setIsSubmitting(true);
 
-    const newProfile: ChildProfile = {
-      id: 'child-' + Date.now(),
-      name: childName.trim(),
-      avatarId: selectedAvatarId,
-      avatarCustomUrl: customPhotoUrl || undefined,
-      ageGroup,
-      createdAt: new Date().toLocaleDateString('pt-BR'),
-    };
+    try {
+      const preservedChild = existingProfile || sessionWorkspace?.workspace.child || null;
+      const draftProfile: ChildProfile = {
+        id: preservedChild?.id || 'child-' + Date.now(),
+        name: childName.trim(),
+        avatarId: selectedAvatarId,
+        avatarCustomUrl: customPhotoUrl || undefined,
+        ageGroup,
+        createdAt: preservedChild?.createdAt || new Date().toLocaleDateString('pt-BR'),
+      };
 
-    // Sincronizar com tabela children do Supabase se o parentId estiver ativo
-    if (parentId) {
-      const saveResult = await saveChildProfileWithResultToSupabase(newProfile, parentId);
-      if (!saveResult.success) {
-        setChildProfileError(
-          saveResult.error ||
-            'Não foi possível salvar o perfil da criança no banco Supabase.'
+      const levelsToSync =
+        currentLevels || sessionWorkspace?.workspace.levels || INITIAL_LEVELS;
+      const medalsToSync =
+        currentMedals || sessionWorkspace?.workspace.medals || INITIAL_MEDALS;
+      const booksToSync =
+        currentCompletedBookIds || sessionWorkspace?.workspace.completedBookIds || [];
+
+      const activeParentId = parentId || (await getCurrentSupabaseUserId()) || '';
+      let finalProfile: ChildProfile = draftProfile;
+
+      // Sincronizar com tabela children do Supabase e preservar o UUID real + etapas concluídas
+      if (activeParentId) {
+        const saveResult = await saveChildProfileWithResultToSupabase(
+          draftProfile,
+          activeParentId
         );
-        return;
-      }
-    }
+        if (!saveResult.success) {
+          setChildProfileError(
+            saveResult.error ||
+              'Não foi possível salvar o perfil da criança no banco Supabase.'
+          );
+          return;
+        }
 
-    playSuccessSound();
-    onCompleteProfile(newProfile);
+        if (saveResult.child) {
+          finalProfile = saveResult.child;
+        }
+
+        await saveInitialProgressForChildToSupabase(
+          finalProfile.id,
+          levelsToSync,
+          medalsToSync,
+          booksToSync
+        );
+      }
+
+      let storedEmail = parentEmail.trim() || sessionWorkspace?.email || '';
+      let storedParentName = parentName.trim() || sessionWorkspace?.name || 'Responsável';
+      if (!storedEmail) {
+        try {
+          const rawAcc = localStorage.getItem('aventura_parent_account');
+          if (rawAcc) {
+            const parsedAcc = JSON.parse(rawAcc) as { email?: string; name?: string };
+            storedEmail = parsedAcc.email || '';
+            storedParentName = parsedAcc.name || storedParentName;
+          }
+        } catch {}
+      }
+
+      if (storedEmail) {
+        saveLocalAccountWorkspace(storedEmail, {
+          parentName: storedParentName,
+          parentId: activeParentId || undefined,
+          child: finalProfile,
+          levels: levelsToSync,
+          medals: medalsToSync,
+          completedBookIds: booksToSync,
+        });
+      }
+
+      playSuccessSound();
+      onCompleteProfile(finalProfile, {
+        child: finalProfile,
+        levels: levelsToSync,
+        medals: medalsToSync,
+        completedBookIds: booksToSync,
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -306,6 +476,78 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
                 </span>
               </div>
             </div>
+
+            {/* Banner para retomar aventura mantendo nome e etapas concluídas salvas */}
+            {savedSessionChild && (
+              <div className="mb-5 rounded-2xl border-2 border-emerald-300 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 p-4 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white border-2 border-emerald-200 text-2xl shadow-xs">
+                      {AVATAR_OPTIONS.find((a) => a.id === savedSessionChild.avatarId)
+                        ?.emoji || '🦊'}
+                    </span>
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-wider text-emerald-800">
+                        Perfil Salvo Encontrado
+                      </p>
+                      <p className="text-sm font-black text-slate-900 font-display">
+                        {savedSessionChild.name}
+                      </p>
+                      <p className="text-[11px] font-bold text-slate-600 flex items-center gap-1">
+                        <Trophy className="h-3.5 w-3.5 text-amber-500" />
+                        <span>
+                          {savedCompletedPhasesCount}{' '}
+                          {savedCompletedPhasesCount === 1
+                            ? 'etapa concluída salva'
+                            : 'etapas concluídas salvas'}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playSuccessSound();
+                        const localSnapshot: RestoredWorkspace | null =
+                          currentLevels || currentMedals || currentCompletedBookIds
+                            ? {
+                                child: existingProfile || null,
+                                levels: currentLevels || INITIAL_LEVELS,
+                                medals: currentMedals || INITIAL_MEDALS,
+                                completedBookIds: currentCompletedBookIds || [],
+                              }
+                            : null;
+                        const mergedResume = sessionWorkspace?.workspace
+                          ? mergeRestoredWorkspaces(
+                              sessionWorkspace.workspace,
+                              localSnapshot
+                            )
+                          : localSnapshot || undefined;
+                        onCompleteProfile(savedSessionChild, mergedResume);
+                      }}
+                      className="flex-1 sm:flex-none rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-black text-white shadow-[0_2px_0_#047857] hover:bg-emerald-700 cursor-pointer"
+                    >
+                      Continuar Aventura →
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playPopSound();
+                        setChildName(savedSessionChild.name);
+                        setSelectedAvatarId(savedSessionChild.avatarId);
+                        setCustomPhotoUrl(savedSessionChild.avatarCustomUrl || null);
+                        setAgeGroup(savedSessionChild.ageGroup);
+                        setStep('child_profile');
+                      }}
+                      className="rounded-xl border-2 border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 cursor-pointer"
+                    >
+                      Editar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Toggle Mode: Cadastro vs Login com cores vibrantes */}
             <div className="mb-6 flex rounded-2xl bg-amber-100/60 p-1.5 border-2 border-amber-200">
@@ -685,10 +927,17 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onCompleteProfile }) => 
               <div className="pt-2">
                 <button
                   type="submit"
-                  className="w-full h-16 rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white font-extrabold text-lg shadow-[0_5px_0_#c2410c] hover:brightness-105 active:translate-y-1 active:shadow-[0_1px_0_#c2410c] transition-all flex items-center justify-center gap-3 cursor-pointer"
+                  disabled={isSubmitting}
+                  className="w-full h-16 rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white font-extrabold text-lg shadow-[0_5px_0_#c2410c] hover:brightness-105 active:translate-y-1 active:shadow-[0_1px_0_#c2410c] transition-all flex items-center justify-center gap-3 cursor-pointer disabled:opacity-75"
                 >
                   <Sparkles className="h-6 w-6 animate-spin" style={{ animationDuration: '6s' }} />
-                  <span>Entrar no Mapa de Aventuras!</span>
+                  <span>
+                    {isSubmitting
+                      ? 'Salvando perfil...'
+                      : existingProfile
+                      ? 'Salvar Alterações e Voltar ao Mapa'
+                      : 'Entrar no Mapa de Aventuras!'}
+                  </span>
                   <ArrowRight className="h-6 w-6" />
                 </button>
               </div>

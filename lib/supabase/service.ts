@@ -1,6 +1,10 @@
 import { getSupabaseClient, isSupabaseConfigured } from './client';
 import { ChildProfile, LevelInfo, Medal, Storybook } from '../types';
-import { INITIAL_LEVELS, INITIAL_MEDALS } from '../game-data';
+import {
+  INITIAL_LEVELS,
+  INITIAL_MEDALS,
+  reconcileLevelsWithCanonical,
+} from '../game-data';
 import { isPhonemeAnswerCorrect } from '../utils';
 
 export interface AuthResult {
@@ -328,6 +332,21 @@ export async function signOutWithSupabase(): Promise<void> {
   }
 }
 
+// 3b. Obter ID do responsável autenticado na sessão atual do Supabase
+export async function getCurrentSupabaseUserId(): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase || !isSupabaseConfigured()) return null;
+
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session?.user?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 // 4. Salvar ou Sincronizar Perfil da Criança (retorna o registro com UUID real do Supabase)
 export async function saveChildProfileWithResultToSupabase(
   child: ChildProfile,
@@ -525,7 +544,7 @@ export async function loadChildWorkspaceFromSupabase(
 
     return {
       child,
-      levels: mergedLevels,
+      levels: reconcileLevelsWithCanonical(mergedLevels),
       medals: mergedMedals,
       completedBookIds,
     };
@@ -572,16 +591,19 @@ export async function getActiveSessionWorkspace(): Promise<{
   }
 }
 
-// 4d. Sincronizar fases iniciais da trilha ao criar novo perfil da criança
+// 4d. Sincronizar fases, livros e medalhas da criança no Supabase
 export async function saveInitialProgressForChildToSupabase(
   childId: string,
-  levels: LevelInfo[]
+  levels: LevelInfo[],
+  medals: Medal[] = [],
+  completedBookIds: string[] = []
 ): Promise<void> {
   const supabase = getSupabaseClient();
   if (!supabase || !isUuid(childId)) return;
 
   try {
-    const rowsToInsert = levels
+    const nowIso = new Date().toISOString();
+    const phaseRows = levels
       .flatMap((lvl) => lvl.phases)
       .filter((phase) => phase.status !== 'locked')
       .map((phase) => ({
@@ -590,18 +612,163 @@ export async function saveInitialProgressForChildToSupabase(
         level_id: phase.levelId,
         stars_earned: phase.starsEarned,
         status: phase.status,
-        completed_at: phase.status === 'completed' ? new Date().toISOString() : null,
-        updated_at: new Date().toISOString(),
+        completed_at: phase.status === 'completed' ? nowIso : null,
+        updated_at: nowIso,
       }));
 
-    if (rowsToInsert.length === 0) return;
+    const bookRows = completedBookIds.map((bookId) => ({
+      child_id: childId,
+      phase_id: `book-${bookId}`,
+      level_id: 4,
+      stars_earned: 3,
+      status: 'completed' as const,
+      completed_at: nowIso,
+      updated_at: nowIso,
+    }));
 
-    await supabase
-      .from('game_progress')
-      .upsert(rowsToInsert as any, { onConflict: 'child_id,phase_id' });
+    const rowsToInsert = [...phaseRows, ...bookRows];
+
+    if (rowsToInsert.length > 0) {
+      await supabase
+        .from('game_progress')
+        .upsert(rowsToInsert as any, { onConflict: 'child_id,phase_id' });
+    }
+
+    const unlockedMedals = medals.filter((m) => m.unlocked);
+    if (unlockedMedals.length > 0) {
+      await supabase.from('medals_unlocked').upsert(
+        unlockedMedals.map((m) => ({
+          child_id: childId,
+          medal_id: m.id,
+          unlocked_at: nowIso,
+        })) as any,
+        { onConflict: 'child_id,medal_id' }
+      );
+    }
   } catch {
     // Ignore sync errors
   }
+}
+
+// 4e. Persistência local por conta (e-mail) para manter nome da criança e etapas concluídas salvos mesmo ao sair/entrar
+const SAVED_ACCOUNTS_STORAGE_KEY = 'aventura_saved_accounts_v1';
+
+export interface SavedLocalAccountSnapshot {
+  parentName?: string;
+  parentEmail: string;
+  parentId?: string;
+  child: ChildProfile | null;
+  levels: LevelInfo[];
+  medals: Medal[];
+  completedBookIds: string[];
+  updatedAt: string;
+}
+
+export function saveLocalAccountWorkspace(
+  email: string,
+  snapshot: Omit<SavedLocalAccountSnapshot, 'parentEmail' | 'updatedAt'>
+): void {
+  if (typeof window === 'undefined') return;
+  const key = email.trim().toLowerCase();
+  if (!key) return;
+
+  try {
+    const raw = localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY);
+    const parsed: Record<string, SavedLocalAccountSnapshot> = raw ? JSON.parse(raw) : {};
+    parsed[key] = {
+      ...snapshot,
+      parentEmail: key,
+      levels: reconcileLevelsWithCanonical(snapshot.levels),
+      updatedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(SAVED_ACCOUNTS_STORAGE_KEY, JSON.stringify(parsed));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function loadLocalAccountWorkspace(email: string): RestoredWorkspace | null {
+  if (typeof window === 'undefined') return null;
+  const key = email.trim().toLowerCase();
+  if (!key) return null;
+
+  try {
+    const raw = localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: Record<string, SavedLocalAccountSnapshot> = JSON.parse(raw);
+    const entry = parsed[key];
+    if (!entry || !entry.child) return null;
+
+    const savedMedalMap = new Map((entry.medals || []).map((m) => [m.id, m]));
+    return {
+      child: entry.child,
+      levels: reconcileLevelsWithCanonical(entry.levels || cloneInitialLevels()),
+      medals: cloneInitialMedals().map((base) => savedMedalMap.get(base.id) || base),
+      completedBookIds: Array.isArray(entry.completedBookIds) ? entry.completedBookIds : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+// 4f. Combinar progresso salvo do Supabase com eventuais etapas concluídas localmente
+export function mergeRestoredWorkspaces(
+  primary: RestoredWorkspace,
+  secondary: RestoredWorkspace | null
+): RestoredWorkspace {
+  if (!secondary) {
+    return {
+      ...primary,
+      levels: reconcileLevelsWithCanonical(primary.levels),
+    };
+  }
+
+  const primaryPhases = new Map(
+    primary.levels.flatMap((l) => l.phases).map((p) => [p.id, p])
+  );
+  const secondaryPhases = new Map(
+    secondary.levels.flatMap((l) => l.phases).map((p) => [p.id, p])
+  );
+
+  const mergedLevels = cloneInitialLevels().map((lvl) => ({
+    ...lvl,
+    phases: lvl.phases.map((p) => {
+      const a = primaryPhases.get(p.id);
+      const b = secondaryPhases.get(p.id);
+      const isCompleted = a?.status === 'completed' || b?.status === 'completed';
+      const isCurrent = !isCompleted && (a?.status === 'current' || b?.status === 'current');
+      return {
+        ...p,
+        starsEarned: Math.max(a?.starsEarned || 0, b?.starsEarned || 0, p.starsEarned),
+        status: isCompleted
+          ? ('completed' as const)
+          : isCurrent
+          ? ('current' as const)
+          : p.status,
+      };
+    }),
+  }));
+
+  const aMedals = new Map(primary.medals.map((m) => [m.id, m]));
+  const bMedals = new Map(secondary.medals.map((m) => [m.id, m]));
+  const mergedMedals = cloneInitialMedals().map((base) => {
+    const mA = aMedals.get(base.id);
+    const mB = bMedals.get(base.id);
+    if (mA?.unlocked) return mA;
+    if (mB?.unlocked) return mB;
+    return base;
+  });
+
+  const mergedBooks = Array.from(
+    new Set([...(primary.completedBookIds || []), ...(secondary.completedBookIds || [])])
+  );
+
+  return {
+    child: primary.child || secondary.child,
+    levels: reconcileLevelsWithCanonical(mergedLevels),
+    medals: mergedMedals,
+    completedBookIds: mergedBooks,
+  };
 }
 
 // 5. Salvar Progresso de Fase no Supabase

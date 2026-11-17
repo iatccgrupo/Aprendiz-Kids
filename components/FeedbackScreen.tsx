@@ -5,7 +5,18 @@ import confetti from 'canvas-confetti';
 import { Star, Sparkles, ArrowRight, RotateCcw, Volume2, Heart, Award } from 'lucide-react';
 import { ActivityOption, ActivityQuestion, ChildProfile } from '@/lib/types';
 import { AVATAR_OPTIONS } from '@/lib/game-data';
-import { playSuccessSound, playTryAgainSound, playStarSound, playPopSound, speakInPortuguese } from '@/lib/sound';
+import {
+  DEFAULT_GEMINI_TTS_VOICE,
+  buildCorrectFeedbackSpeech,
+  buildRetryFeedbackSpeech,
+  playSuccessSound,
+  playTryAgainSound,
+  playStarSound,
+  playPopSound,
+  prefetchSpeechInPortuguese,
+  speakInPortuguese,
+  stopSpeaking,
+} from '@/lib/sound';
 
 interface FeedbackScreenProps {
   isCorrect: boolean;
@@ -30,10 +41,22 @@ export const FeedbackScreen: React.FC<FeedbackScreenProps> = ({
 }) => {
   const [starsRevealed, setStarsRevealed] = useState(0);
   const avatarObj = AVATAR_OPTIONS.find((a) => a.id === childProfile.avatarId) || AVATAR_OPTIONS[0];
+  const celebrationSpeech = buildCorrectFeedbackSpeech(
+    childProfile.name,
+    question.targetLetter
+  );
+  const retrySpeech = buildRetryFeedbackSpeech(childProfile.name);
 
   useEffect(() => {
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+
     if (isCorrect) {
       if (soundEnabled) {
+        prefetchSpeechInPortuguese(
+          celebrationSpeech,
+          false,
+          DEFAULT_GEMINI_TTS_VOICE
+        );
         playSuccessSound();
       }
 
@@ -46,56 +69,76 @@ export const FeedbackScreen: React.FC<FeedbackScreenProps> = ({
           colors: ['#fbbf24', '#3b82f6', '#10b981', '#f97316', '#a855f7'],
         });
 
-        setTimeout(() => {
-          confetti({
-            particleCount: 50,
-            angle: 60,
-            spread: 55,
-            origin: { x: 0 },
-            colors: ['#fbbf24', '#3b82f6', '#10b981'],
-          });
-          confetti({
-            particleCount: 50,
-            angle: 120,
-            spread: 55,
-            origin: { x: 1 },
-            colors: ['#f97316', '#a855f7', '#fbbf24'],
-          });
-        }, 350);
+        timers.push(
+          setTimeout(() => {
+            confetti({
+              particleCount: 50,
+              angle: 60,
+              spread: 55,
+              origin: { x: 0 },
+              colors: ['#fbbf24', '#3b82f6', '#10b981'],
+            });
+            confetti({
+              particleCount: 50,
+              angle: 120,
+              spread: 55,
+              origin: { x: 1 },
+              colors: ['#f97316', '#a855f7', '#fbbf24'],
+            });
+          }, 350)
+        );
       } catch {
         // Fallback if canvas is unavailable
       }
 
       // Staggered star reveal with chimes
-      setTimeout(() => {
-        setStarsRevealed(1);
-        if (soundEnabled) playStarSound(0);
-      }, 400);
+      timers.push(
+        setTimeout(() => {
+          setStarsRevealed(1);
+          if (soundEnabled) playStarSound(0);
+        }, 380)
+      );
 
-      setTimeout(() => {
-        setStarsRevealed(2);
-        if (soundEnabled) playStarSound(1);
-      }, 750);
+      timers.push(
+        setTimeout(() => {
+          setStarsRevealed(2);
+          if (soundEnabled) playStarSound(1);
+        }, 720)
+      );
 
-      setTimeout(() => {
-        setStarsRevealed(3);
-        if (soundEnabled) playStarSound(2);
-      }, 1100);
+      timers.push(
+        setTimeout(() => {
+          setStarsRevealed(3);
+          if (soundEnabled) playStarSound(2);
+        }, 1040)
+      );
 
       if (soundEnabled) {
-        setTimeout(() => {
-          speakInPortuguese(`Sensacional, ${childProfile.name}! Você acertou a letrinha ${question.targetLetter}!`, false);
-        }, 1300);
+        timers.push(
+          setTimeout(() => {
+            void speakInPortuguese(
+              celebrationSpeech,
+              false,
+              DEFAULT_GEMINI_TTS_VOICE
+            );
+          }, 1150)
+        );
       }
-    } else {
-      if (soundEnabled) {
-        playTryAgainSound();
+    } else if (soundEnabled) {
+      prefetchSpeechInPortuguese(retrySpeech, false, DEFAULT_GEMINI_TTS_VOICE);
+      playTryAgainSound();
+      timers.push(
         setTimeout(() => {
-          speakInPortuguese(`Quase lá, ${childProfile.name}! Que tal tentar de novo?`, false);
-        }, 300);
-      }
+          void speakInPortuguese(retrySpeech, false, DEFAULT_GEMINI_TTS_VOICE);
+        }, 260)
+      );
     }
-  }, [isCorrect, soundEnabled, childProfile.name, question.targetLetter]);
+
+    return () => {
+      timers.forEach((t) => clearTimeout(t));
+      stopSpeaking();
+    };
+  }, [isCorrect, soundEnabled, celebrationSpeech, retrySpeech]);
 
   return (
     <div className="relative mx-auto max-w-2xl px-4 py-8 sm:py-12">
@@ -125,6 +168,24 @@ export const FeedbackScreen: React.FC<FeedbackScreenProps> = ({
             </strong>
             !
           </p>
+
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={() => {
+                playPopSound();
+                void speakInPortuguese(
+                  celebrationSpeech,
+                  false,
+                  DEFAULT_GEMINI_TTS_VOICE
+                );
+              }}
+              className="inline-flex items-center gap-2 rounded-full bg-amber-100 border-2 border-amber-300 px-4 py-2 text-xs font-extrabold text-amber-900 hover:bg-amber-200 transition-colors cursor-pointer"
+            >
+              <Volume2 className="h-4 w-4 text-amber-700" />
+              <span>Ouvir Parabéns</span>
+            </button>
+          </div>
 
           {/* Animated Stars Card */}
           <div className="my-6 rounded-2xl bg-amber-50/70 border-2 border-amber-200 p-4 max-w-md mx-auto">
