@@ -166,29 +166,29 @@ const THEME_PALETTES: Record<PhaseThemeColor, ThemePalette> = {
   },
 };
 
-function sampleCheckpointsFromStrokes(strokes: TraceStrokeSpec[]): TracePoint[] {
-  const checkpoints: TracePoint[] = [];
-  for (const stroke of strokes) {
+function sampleCheckpointsPerStroke(strokes: TraceStrokeSpec[]): TracePoint[][] {
+  return strokes.map((stroke) => {
+    const checkpoints: TracePoint[] = [];
     const pts = stroke.points;
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i];
       const b = pts[i + 1];
       const segLen = Math.hypot(b.x - a.x, b.y - a.y);
-      const subSteps = Math.max(1, Math.round(segLen / 34));
+      const subSteps = Math.max(2, Math.round(segLen / 28));
       for (let s = 0; s <= subSteps; s++) {
         const t = s / subSteps;
         const px = Math.round(a.x + (b.x - a.x) * t);
         const py = Math.round(a.y + (b.y - a.y) * t);
         const tooClose = checkpoints.some(
-          (existing) => Math.hypot(existing.x - px, existing.y - py) < 22
+          (existing) => Math.hypot(existing.x - px, existing.y - py) < 18
         );
         if (!tooClose) {
           checkpoints.push({ x: px, y: py });
         }
       }
     }
-  }
-  return checkpoints;
+    return checkpoints;
+  });
 }
 
 function renderHighlightedWord(word: string, highlightSegment?: string) {
@@ -236,15 +236,16 @@ export const PhaseTrilogyActivity: React.FC<PhaseTrilogyActivityProps> = ({
   const [hasTappedMascot, setHasTappedMascot] = useState(false);
   const [heardPhoneme, setHeardPhoneme] = useState(false);
 
-  // Estação 2: Traçado guiado no Canvas
+  // Estação 2: Traçado guiado no Canvas (por traço individual)
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef(false);
-  const visitedCheckpointsRef = useRef<Set<number>>(new Set());
+  const visitedPerStrokeRef = useRef<Array<Set<number>>>([]);
+  const [completedStrokeIndices, setCompletedStrokeIndices] = useState<number[]>([]);
   const [traceProgress, setTraceProgress] = useState(0);
   const [traceCompleted, setTraceCompleted] = useState(false);
 
-  const traceCheckpoints = useMemo(
-    () => sampleCheckpointsFromStrokes(config.traceStrokes),
+  const strokeCheckpoints = useMemo(
+    () => sampleCheckpointsPerStroke(config.traceStrokes),
     [config.traceStrokes]
   );
 
@@ -407,7 +408,8 @@ export const PhaseTrilogyActivity: React.FC<PhaseTrilogyActivityProps> = ({
 
   const resetTracingCanvas = () => {
     playPopSound();
-    visitedCheckpointsRef.current.clear();
+    visitedPerStrokeRef.current = strokeCheckpoints.map(() => new Set<number>());
+    setCompletedStrokeIndices([]);
     setTraceProgress(0);
     setTraceCompleted(false);
     const canvas = canvasRef.current;
@@ -430,22 +432,48 @@ export const PhaseTrilogyActivity: React.FC<PhaseTrilogyActivityProps> = ({
   };
 
   const registerTraceCheckpoint = (x: number, y: number) => {
-    if (traceCheckpoints.length === 0) return;
+    if (strokeCheckpoints.length === 0) return;
 
-    traceCheckpoints.forEach((cp, idx) => {
-      if (Math.hypot(x - cp.x, y - cp.y) <= 28) {
-        visitedCheckpointsRef.current.add(idx);
+    if (visitedPerStrokeRef.current.length !== strokeCheckpoints.length) {
+      visitedPerStrokeRef.current = strokeCheckpoints.map(() => new Set<number>());
+    }
+
+    const doneIndices: number[] = [];
+    let ratioSum = 0;
+
+    strokeCheckpoints.forEach((pts, sIdx) => {
+      const visitedSet = visitedPerStrokeRef.current[sIdx];
+      pts.forEach((cp, cIdx) => {
+        if (Math.hypot(x - cp.x, y - cp.y) <= 25) {
+          visitedSet.add(cIdx);
+        }
+      });
+
+      const requiredForStroke =
+        pts.length <= 3 ? pts.length : Math.max(2, Math.ceil(pts.length * 0.85));
+      const strokeRatio =
+        requiredForStroke > 0
+          ? Math.min(1, visitedSet.size / requiredForStroke)
+          : 1;
+
+      ratioSum += strokeRatio;
+      if (visitedSet.size >= requiredForStroke) {
+        doneIndices.push(sIdx);
       }
     });
 
-    const requiredCount = Math.max(1, Math.ceil(traceCheckpoints.length * 0.72));
-    const progress = Math.min(
-      100,
-      Math.round((visitedCheckpointsRef.current.size / requiredCount) * 100)
+    const allStrokesDone = doneIndices.length === strokeCheckpoints.length;
+    const rawProgress = Math.round((ratioSum / strokeCheckpoints.length) * 100);
+    const progress = allStrokesDone ? 100 : Math.min(99, rawProgress);
+
+    setCompletedStrokeIndices((prev) =>
+      prev.length === doneIndices.length && prev.every((v, i) => v === doneIndices[i])
+        ? prev
+        : doneIndices
     );
     setTraceProgress(progress);
 
-    if (!traceCompleted && visitedCheckpointsRef.current.size >= requiredCount) {
+    if (!traceCompleted && allStrokesDone) {
       setTraceCompleted(true);
       playSuccessSound();
       void speakSafely(config.traceSuccessSpeech, false);
@@ -757,7 +785,12 @@ export const PhaseTrilogyActivity: React.FC<PhaseTrilogyActivityProps> = ({
 
             <div className="mx-auto max-w-md flex flex-col items-center gap-4">
               <div className="w-full flex items-center justify-between text-xs font-extrabold text-slate-700 px-1">
-                <span>Progresso do traçado:</span>
+                <span>
+                  Traçados concluídos:{' '}
+                  <strong className={palette.accentText}>
+                    {completedStrokeIndices.length} de {config.traceStrokes.length}
+                  </strong>
+                </span>
                 <span className={`tabular-nums ${palette.accentText}`}>{traceProgress}%</span>
               </div>
               <div className="w-full h-3 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
@@ -765,6 +798,25 @@ export const PhaseTrilogyActivity: React.FC<PhaseTrilogyActivityProps> = ({
                   className={`h-full bg-gradient-to-r transition-all duration-200 ${palette.progressBar}`}
                   style={{ width: `${traceProgress}%` }}
                 />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {config.traceStrokes.map((stroke, idx) => {
+                  const isStrokeDone = completedStrokeIndices.includes(idx);
+                  return (
+                    <span
+                      key={`${stroke.marker}-${idx}`}
+                      className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-extrabold border transition-colors ${
+                        isStrokeDone
+                          ? 'bg-emerald-100 border-emerald-300 text-emerald-900'
+                          : 'bg-slate-50 border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      {isStrokeDone && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />}
+                      <span>Traço {stroke.marker}</span>
+                    </span>
+                  );
+                })}
               </div>
 
               <div className={`relative rounded-3xl border-4 overflow-hidden shadow-inner ${palette.tabBorder}`}>
@@ -783,7 +835,7 @@ export const PhaseTrilogyActivity: React.FC<PhaseTrilogyActivityProps> = ({
               {traceCompleted && (
                 <div className="rounded-2xl bg-emerald-100 border-2 border-emerald-300 px-4 py-2.5 text-sm font-black text-emerald-900 flex items-center gap-2">
                   <Sparkles className="h-5 w-5 text-emerald-600" />
-                  <span>Traçado perfeito de {config.traceDisplayChar}!</span>
+                  <span>Todos os traçados de {config.traceDisplayChar} concluídos!</span>
                 </div>
               )}
 

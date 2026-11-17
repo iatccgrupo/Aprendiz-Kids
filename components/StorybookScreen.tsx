@@ -48,6 +48,29 @@ const GENERATOR_THEMES = [
   { id: 'Alfabeto', label: 'Letrinhas Mágicas' },
 ];
 
+const FRIENDLY_STORY_BUSY_ERROR =
+  'A mágica das histórias está um pouquinho ocupada agora. Tente novamente em alguns segundos!';
+
+function sanitizeStoryGenerationError(rawMessage?: string): string {
+  if (!rawMessage) return FRIENDLY_STORY_BUSY_ERROR;
+  const trimmed = rawMessage.trim();
+  const lower = trimmed.toLowerCase();
+  if (
+    !trimmed ||
+    trimmed.startsWith('{') ||
+    trimmed.startsWith('[') ||
+    lower.includes('"error"') ||
+    lower.includes('unavailable') ||
+    lower.includes('503') ||
+    lower.includes('429') ||
+    lower.includes('high demand') ||
+    lower.includes('resource_exhausted')
+  ) {
+    return FRIENDLY_STORY_BUSY_ERROR;
+  }
+  return trimmed;
+}
+
 export const StorybookScreen: React.FC<StorybookScreenProps> = ({
   childProfile,
   soundEnabled,
@@ -207,8 +230,9 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
     }
   };
 
-  const handleGenerateBook = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGenerateBook = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (isGenerating) return;
     setGenerationError('');
     setIsGenerating(true);
     playPopSound();
@@ -230,9 +254,7 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
       };
 
       if (!res.ok || !data.book) {
-        setGenerationError(
-          data.error || 'Não foi possível criar a história agora. Tente novamente.'
-        );
+        setGenerationError(sanitizeStoryGenerationError(data.error));
         return;
       }
 
@@ -245,8 +267,8 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
     } catch (err: unknown) {
       setGenerationError(
         err instanceof Error
-          ? err.message
-          : 'Erro de conexão ao gerar sua história mágica.'
+          ? sanitizeStoryGenerationError(err.message)
+          : FRIENDLY_STORY_BUSY_ERROR
       );
     } finally {
       setIsGenerating(false);
@@ -642,10 +664,21 @@ export const StorybookScreen: React.FC<StorybookScreenProps> = ({
           {generationError && (
             <div
               role="alert"
-              className="rounded-2xl bg-red-50 p-4 border-2 border-red-300 text-xs sm:text-sm font-bold text-red-900 flex items-start gap-2.5"
+              className="rounded-2xl bg-amber-50 p-4 border-2 border-amber-300 text-xs sm:text-sm font-bold text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
             >
-              <AlertCircle className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
-              <span>{generationError}</span>
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                <span>{generationError}</span>
+              </div>
+              <button
+                type="button"
+                disabled={isGenerating}
+                onClick={() => void handleGenerateBook()}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-black text-white shadow-[0_3px_0_#b45309] hover:brightness-105 active:translate-y-0.5 transition-all whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Tentar novamente</span>
+              </button>
             </div>
           )}
         </form>
