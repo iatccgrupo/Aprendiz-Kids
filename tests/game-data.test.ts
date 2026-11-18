@@ -11,7 +11,12 @@ import {
   reconcileLevelsWithCanonical,
   PHASE_TRILOGY_CONFIGS,
   getPhaseTrilogyConfig,
+  getEducacaoInfantilProgressStats,
+  isEducacaoInfantilCompleted,
+  applyCycleUnlockToLevels,
+  isPrimeiroAnoAccessible,
 } from '../lib/game-data';
+import { buildPrimeiroAnoUnlockSpeech } from '../lib/sound';
 import { isPhonemeAnswerCorrect, normalizePhonemeString } from '../lib/utils';
 
 test('Estrutura Geral das Fases 1 a 5 (A, E, I, O, U)', () => {
@@ -55,6 +60,7 @@ test('Fase 3 é dedicada exclusivamente à Vogal I (I de Iguana) e possui palavr
 
 test('Todas as fases e níveis possuem Trilogia Interativa completa (Som Fonético, Traçado Guiado e Caça-Palavras)', () => {
   const allPhases = INITIAL_LEVELS.flatMap((lvl) => lvl.phases);
+  assert.equal(allPhases.length, 15);
   assert.equal(Object.keys(PHASE_TRILOGY_CONFIGS).length, allPhases.length);
 
   for (const phase of allPhases) {
@@ -131,3 +137,57 @@ test('reconcileLevelsWithCanonical restaura ordem canônica preservando progress
   assert.equal(reconciled[0].phases[2].letter, 'I');
   assert.equal(reconciled[0].phases[2].starsEarned, 2);
 });
+
+test('Progressão de ciclo: 1º Ano Fundamental permanece bloqueado até 100% da Educação Infantil e desbloqueia automaticamente ao concluir todas as 12 fases', () => {
+  // 11 de 12 fases concluídas -> 1º Ano deve permanecer bloqueado
+  const partialLevels = INITIAL_LEVELS.map((lvl) => ({
+    ...lvl,
+    phases: lvl.phases.map((p) => {
+      if (lvl.cycle === 'educacao_infantil' && p.id !== 'fase-12') {
+        return { ...p, status: 'completed' as const, starsEarned: 3 };
+      }
+      if (p.id === 'fase-12') {
+        return { ...p, status: 'current' as const, starsEarned: 0 };
+      }
+      return { ...p };
+    }),
+  }));
+
+  const statsPartial = getEducacaoInfantilProgressStats(partialLevels);
+  assert.equal(statsPartial.totalCount, 12);
+  assert.equal(statsPartial.completedCount, 11);
+  assert.equal(statsPartial.isCompleted, false);
+  assert.equal(isEducacaoInfantilCompleted(partialLevels), false);
+
+  const enforcedPartial = applyCycleUnlockToLevels(partialLevels, false);
+  assert.equal(isPrimeiroAnoAccessible(enforcedPartial, null), false);
+  assert.equal(enforcedPartial[3].phases[0].status, 'locked');
+
+  // 12 de 12 fases concluídas -> 1º Ano desbloqueia automaticamente na fase-13
+  const completedEdInfantil = INITIAL_LEVELS.map((lvl) => ({
+    ...lvl,
+    phases: lvl.phases.map((p) =>
+      lvl.cycle === 'educacao_infantil'
+        ? { ...p, status: 'completed' as const, starsEarned: 3 }
+        : { ...p }
+    ),
+  }));
+
+  const statsDone = getEducacaoInfantilProgressStats(completedEdInfantil);
+  assert.equal(statsDone.completedCount, 12);
+  assert.equal(statsDone.percent, 100);
+  assert.equal(isEducacaoInfantilCompleted(completedEdInfantil), true);
+
+  const unlockedLevels = applyCycleUnlockToLevels(completedEdInfantil, false);
+  assert.equal(isPrimeiroAnoAccessible(unlockedLevels, null), true);
+  assert.equal(unlockedLevels[3].id, 4);
+  assert.equal(unlockedLevels[3].phases[0].id, 'fase-13');
+  assert.equal(unlockedLevels[3].phases[0].status, 'current');
+  assert.equal(unlockedLevels[3].phases[1].status, 'locked');
+
+  const speech = buildPrimeiroAnoUnlockSpeech('Sofia');
+  assert.match(speech, /Parabéns, Sofia/i);
+  assert.match(speech, /Educação Infantil/i);
+  assert.match(speech, /1º Ano do Ensino Fundamental/i);
+});
+

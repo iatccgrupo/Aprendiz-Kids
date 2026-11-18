@@ -1,5 +1,7 @@
 import {
   LevelInfo,
+  Phase,
+  ChildProfile,
   ActivityQuestion,
   ActivityOption,
   Medal,
@@ -7,6 +9,8 @@ import {
   ParentTip,
 } from './types';
 import { isPhonemeAnswerCorrect, normalizePhonemeString } from './utils';
+
+export const PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID = 'cycle-1ano-unlocked';
 
 export const AVATAR_OPTIONS = [
   { id: 'fox', name: 'Pipoca', desc: 'A Raposinha Curiosa', emoji: '🦊', color: 'bg-orange-100 border-orange-400' },
@@ -21,14 +25,12 @@ export const AVATAR_OPTIONS = [
 
 /**
  * Estrutura oficial e ordenada das fases (BNCC - Alfabetização Lúdica):
- * Nível 1 (Vogais):
- * - Fase 1: Vogal A (Abelha)
- * - Fase 2: Vogal E (Elefante)
- * - Fase 3: Vogal I (Iguana) [Reposicionada imediatamente após a Fase 2]
- * - Fase 4: Vogal O (Ovelha)
- * - Fase 5: Vogal U (Uva)
- * Nível 2 (Floresta dos Fonemas - Consoantes Amigas): B, C, M, P
- * Nível 3 (Reino das Palavras Mágicas): Sílabas, Rimas e Desafio Final
+ * Ciclo 1 - Educação Infantil (Níveis 1, 2 e 3):
+ * - Nível 1 (Vogais): Fase 1 (A), Fase 2 (E), Fase 3 (I - Iguana), Fase 4 (O), Fase 5 (U)
+ * - Nível 2 (Floresta dos Fonemas - Consoantes Amigas): B, C, M, P
+ * - Nível 3 (Reino das Palavras Mágicas): Sílabas, Rimas e Desafio Final
+ * Ciclo 2 - 1º Ano do Ensino Fundamental (Nível 4):
+ * - Desbloqueado automaticamente ao concluir 100% da Educação Infantil (Fases 1 a 12)
  */
 export const INITIAL_LEVELS: LevelInfo[] = [
   {
@@ -37,6 +39,7 @@ export const INITIAL_LEVELS: LevelInfo[] = [
     subtitle: 'Descobrindo os primeiros sons mágicos do alfabeto',
     badge: 'Vogais A-E-I-O-U',
     accentColor: 'from-blue-500 to-cyan-500',
+    cycle: 'educacao_infantil',
     phases: [
       {
         id: 'fase-1',
@@ -106,6 +109,7 @@ export const INITIAL_LEVELS: LevelInfo[] = [
     subtitle: 'Conexão entre letras sonoras e animais da floresta',
     badge: 'Consoantes Amigas',
     accentColor: 'from-emerald-500 to-teal-500',
+    cycle: 'educacao_infantil',
     phases: [
       {
         id: 'fase-6',
@@ -163,6 +167,7 @@ export const INITIAL_LEVELS: LevelInfo[] = [
     subtitle: 'Unindo sílabas e montando as primeiras palavras completas',
     badge: 'Mestres da Leitura',
     accentColor: 'from-purple-500 to-indigo-500',
+    cycle: 'educacao_infantil',
     phases: [
       {
         id: 'fase-10',
@@ -199,6 +204,52 @@ export const INITIAL_LEVELS: LevelInfo[] = [
         status: 'locked',
         description: 'S de Saber e Sol Dourado',
         bnccTag: 'EF01LP14',
+      },
+    ],
+  },
+  {
+    id: 4,
+    name: 'Nível 4: Trilha do 1º Ano Fundamental',
+    subtitle: 'Encontros consonantais, dígrafos mágicos e leitura fluente',
+    badge: '1º Ano Fundamental',
+    accentColor: 'from-amber-500 to-rose-500',
+    cycle: 'primeiro_ano',
+    phases: [
+      {
+        id: 'fase-13',
+        number: 13,
+        levelId: 4,
+        title: 'Encontro BR',
+        letter: 'BR',
+        icon: '🇧🇷',
+        starsEarned: 0,
+        status: 'locked',
+        description: 'Brasil, Brinquedo e Abraço',
+        bnccTag: 'EF01LP09',
+      },
+      {
+        id: 'fase-14',
+        number: 14,
+        levelId: 4,
+        title: 'Dígrafo CH',
+        letter: 'CH',
+        icon: '🔑',
+        starsEarned: 0,
+        status: 'locked',
+        description: 'Chave, Chuva e Chapéu',
+        bnccTag: 'EF01LP11',
+      },
+      {
+        id: 'fase-15',
+        number: 15,
+        levelId: 4,
+        title: 'Leitura Brilhante',
+        letter: 'LUZ',
+        icon: '🌟',
+        starsEarned: 0,
+        status: 'locked',
+        description: 'Palavras e Frases do 1º Ano',
+        bnccTag: 'EF01LP16',
       },
     ],
   },
@@ -969,6 +1020,209 @@ export const PHASE_TRILOGY_CONFIGS: Record<string, PhaseTrilogyConfig> = {
       { id: 'wh-s-sino', word: 'Sino', icon: '🔔', isMatch: true, initialLetter: 'S', highlightSegment: 'S' },
     ],
   },
+  'fase-13': {
+    phaseId: 'fase-13',
+    themeColor: 'emerald',
+    mascotName: 'Tucano Tico',
+    mascotEmoji: '🦜',
+    titleBadge: '1º Ano: Encontro BR — Brasil 🇧🇷',
+    exploreHeading: 'Bem-vindo ao 1º Ano! Conheça o som BR!',
+    exploreSubtitle: 'Toque no Tucano Tico para juntar B + R e ouvir o som vibrante BR!',
+    welcomeSpeech: 'Bem-vindo ao 1º Ano do Ensino Fundamental! Toque no tucano para ouvir o encontro B R de Brasil e Brinquedo!',
+    initialGreeting: 'Oi! Eu sou o Tucano Tico! Vamos descobrir o som B + R juntos?',
+    tappedGreeting: 'B + R = BR! BR de Brasil, Brinquedo e Braço!',
+    tappedSpeech: 'Brrr! Quando o B se junta com o R, nasce o som vibrante BR de Brasil e Brinquedo!',
+    phonemeButtonLabel: 'Ouvir Encontro /br/',
+    phonemeSpeech: 'Encontro B R! Repita comigo: BR de Brasil e Brinquedo!',
+    traceDisplayChar: 'BR',
+    traceInstruction: 'Siga os números para traçar as letras B e R juntinhas!',
+    traceSuccessSpeech: 'Excelente! Você escreveu o encontro B R com capricho!',
+    traceStrokes: [
+      {
+        marker: '1',
+        markerPos: { x: 40, y: 54 },
+        points: [
+          { x: 58, y: 54 },
+          { x: 58, y: 224 },
+        ],
+      },
+      {
+        marker: '2',
+        markerPos: { x: 64, y: 34 },
+        points: [
+          { x: 58, y: 54 },
+          { x: 118, y: 54 },
+          { x: 140, y: 74 },
+          { x: 140, y: 116 },
+          { x: 118, y: 136 },
+          { x: 58, y: 136 },
+          { x: 124, y: 136 },
+          { x: 144, y: 160 },
+          { x: 144, y: 204 },
+          { x: 120, y: 224 },
+          { x: 58, y: 224 },
+        ],
+      },
+      {
+        marker: '3',
+        markerPos: { x: 168, y: 54 },
+        points: [
+          { x: 186, y: 54 },
+          { x: 186, y: 224 },
+        ],
+      },
+      {
+        marker: '4',
+        markerPos: { x: 192, y: 34 },
+        points: [
+          { x: 186, y: 54 },
+          { x: 244, y: 54 },
+          { x: 266, y: 76 },
+          { x: 266, y: 118 },
+          { x: 244, y: 140 },
+          { x: 186, y: 140 },
+          { x: 264, y: 224 },
+        ],
+      },
+    ],
+    wordHuntTabLabel: '3. Caça-Palavras BR',
+    wordHuntTitle: 'Caça às Palavras com o Encontro BR!',
+    wordHuntPrompt: 'Toque em todas as figuras que têm o encontro BR!',
+    wordHuntRuleLabel: 'têm BR',
+    wordHuntItems: [
+      { id: 'wh-br-brasil', word: 'Brasil', icon: '🇧🇷', isMatch: true, initialLetter: 'B', highlightSegment: 'Br' },
+      { id: 'wh-br-casa', word: 'Casa', icon: '🏠', isMatch: false, initialLetter: 'C' },
+      { id: 'wh-br-brinquedo', word: 'Brinquedo', icon: '🧸', isMatch: true, initialLetter: 'B', highlightSegment: 'Br' },
+      { id: 'wh-br-gato', word: 'Gato', icon: '🐱', isMatch: false, initialLetter: 'G' },
+      { id: 'wh-br-braco', word: 'Braço', icon: '💪', isMatch: true, initialLetter: 'B', highlightSegment: 'Br' },
+      { id: 'wh-br-bruxa', word: 'Bruxa', icon: '🧙‍♀️', isMatch: true, initialLetter: 'B', highlightSegment: 'Br' },
+    ],
+  },
+  'fase-14': {
+    phaseId: 'fase-14',
+    themeColor: 'blue',
+    mascotName: 'Chaveirinho Chico',
+    mascotEmoji: '🔑',
+    titleBadge: '1º Ano: Dígrafo CH — Chave 🔑',
+    exploreHeading: 'Descubra o Dígrafo CH com a Chave Mágica!',
+    exploreSubtitle: 'Toque na chavinha do 1º Ano para ouvir C + H fazendo o som /x/!',
+    welcomeSpeech: 'Fase 14 do 1º Ano! Vamos aprender o dígrafo C H de Chave, Chuva e Chapéu!',
+    initialGreeting: 'Oi! Quando C e H se abraçam, fazemos shhh! Toque em mim!',
+    tappedGreeting: 'C + H = CH! CH de Chave, Chuva e Chapéu!',
+    tappedSpeech: 'Chê! As duas letrinhas C e H juntas fazem um único som: shhh de Chave e Chuva!',
+    phonemeButtonLabel: 'Ouvir Dígrafo /ch/',
+    phonemeSpeech: 'Dígrafo C H! Repita comigo: Shhh de Chave e Chapéu!',
+    traceDisplayChar: 'CH',
+    traceInstruction: 'Siga os números para traçar juntinhas as letras C e H!',
+    traceSuccessSpeech: 'Incrível! Você desenhou o dígrafo C H direitinho!',
+    traceStrokes: [
+      {
+        marker: '1',
+        markerPos: { x: 132, y: 66 },
+        points: buildEllipseStroke(102, 140, 48, 74, -45, -315, 16),
+      },
+      {
+        marker: '2',
+        markerPos: { x: 162, y: 54 },
+        points: [
+          { x: 180, y: 54 },
+          { x: 180, y: 224 },
+        ],
+      },
+      {
+        marker: '3',
+        markerPos: { x: 244, y: 54 },
+        points: [
+          { x: 262, y: 54 },
+          { x: 262, y: 224 },
+        ],
+      },
+      {
+        marker: '4',
+        markerPos: { x: 182, y: 140 },
+        points: [
+          { x: 180, y: 140 },
+          { x: 262, y: 140 },
+        ],
+      },
+    ],
+    wordHuntTabLabel: '3. Caça-Palavras CH',
+    wordHuntTitle: 'Caça às Palavras com o Dígrafo CH!',
+    wordHuntPrompt: 'Toque em todas as figuras cujos nomes começam com CH!',
+    wordHuntRuleLabel: 'começam com CH',
+    wordHuntItems: [
+      { id: 'wh-ch-chave', word: 'Chave', icon: '🔑', isMatch: true, initialLetter: 'C', highlightSegment: 'Ch' },
+      { id: 'wh-ch-bola', word: 'Bola', icon: '⚽', isMatch: false, initialLetter: 'B' },
+      { id: 'wh-ch-chuva', word: 'Chuva', icon: '🌧️', isMatch: true, initialLetter: 'C', highlightSegment: 'Ch' },
+      { id: 'wh-ch-pato', word: 'Pato', icon: '🦆', isMatch: false, initialLetter: 'P' },
+      { id: 'wh-ch-chapeu', word: 'Chapéu', icon: '👒', isMatch: true, initialLetter: 'C', highlightSegment: 'Ch' },
+      { id: 'wh-ch-chocolate', word: 'Chocolate', icon: '🍫', isMatch: true, initialLetter: 'C', highlightSegment: 'Ch' },
+    ],
+  },
+  'fase-15': {
+    phaseId: 'fase-15',
+    themeColor: 'amber',
+    mascotName: 'Estrela Luz',
+    mascotEmoji: '🌟',
+    titleBadge: '1º Ano: Leitura Brilhante — LUZ 🌟',
+    exploreHeading: 'Leitura Brilhante do 1º Ano Fundamental!',
+    exploreSubtitle: 'Toque na Estrela Luz para ler a palavra LUZ e praticar leitura rápida!',
+    welcomeSpeech: 'Que orgulho! Chegamos à Leitura Brilhante do 1º Ano! Toque na estrela para ouvir a palavra LUZ!',
+    initialGreeting: 'Oi! Vamos ler palavras completas do 1º Ano juntos?',
+    tappedGreeting: 'L + U + Z = LUZ! A luz do saber brilha em você!',
+    tappedSpeech: 'Luz! Juntando L, U e Z lemos LUZ! Agora você já lê palavrinhas inteiras com brilho!',
+    phonemeButtonLabel: 'Ouvir Palavra LUZ',
+    phonemeSpeech: 'Lê comigo: L U Z forma a palavra Luz!',
+    traceDisplayChar: 'LUZ',
+    traceInstruction: 'Siga os números para escrever a palavra mágica LUZ!',
+    traceSuccessSpeech: 'Maravilha! Você escreveu a palavra LUZ inteirinha!',
+    traceStrokes: [
+      {
+        marker: '1',
+        markerPos: { x: 34, y: 58 },
+        points: [
+          { x: 48, y: 66 },
+          { x: 48, y: 214 },
+          { x: 102, y: 214 },
+        ],
+      },
+      {
+        marker: '2',
+        markerPos: { x: 118, y: 58 },
+        points: [
+          { x: 128, y: 66 },
+          { x: 128, y: 174 },
+          { x: 140, y: 206 },
+          { x: 160, y: 216 },
+          { x: 180, y: 206 },
+          { x: 192, y: 174 },
+          { x: 192, y: 66 },
+        ],
+      },
+      {
+        marker: '3',
+        markerPos: { x: 214, y: 46 },
+        points: [
+          { x: 214, y: 66 },
+          { x: 282, y: 66 },
+          { x: 214, y: 214 },
+          { x: 284, y: 214 },
+        ],
+      },
+    ],
+    wordHuntTabLabel: '3. Caça-Palavras LUZ',
+    wordHuntTitle: 'Caça às Palavras que Terminam com Z ou Brilham!',
+    wordHuntPrompt: 'Toque nas palavras que rimam com LUZ ou terminam com Z!',
+    wordHuntRuleLabel: 'terminam com Z',
+    wordHuntItems: [
+      { id: 'wh-luz-luz', word: 'Luz', icon: '🌟', isMatch: true, initialLetter: 'L', highlightSegment: 'uz' },
+      { id: 'wh-luz-mesa', word: 'Mesa', icon: '🪑', isMatch: false, initialLetter: 'M' },
+      { id: 'wh-luz-paz', word: 'Paz', icon: '🕊️', isMatch: true, initialLetter: 'P', highlightSegment: 'az' },
+      { id: 'wh-luz-livro', word: 'Livro', icon: '📖', isMatch: false, initialLetter: 'L' },
+      { id: 'wh-luz-feliz', word: 'Feliz', icon: '😄', isMatch: true, initialLetter: 'F', highlightSegment: 'iz' },
+      { id: 'wh-luz-voz', word: 'Voz', icon: '🎤', isMatch: true, initialLetter: 'V', highlightSegment: 'oz' },
+    ],
+  },
 };
 
 export function getPhaseTrilogyConfig(phaseId: string): PhaseTrilogyConfig {
@@ -1221,6 +1475,50 @@ const PHASE_CHALLENGE_BLUEPRINTS: PhaseChallengeBlueprint[] = [
       { letter: 'V', word: 'Vento', icon: '💨', colorClass: 'bg-teal-100 border-teal-300 text-teal-900' },
     ],
   },
+
+  // NÍVEL 4: TRILHA DO 1º ANO FUNDAMENTAL
+  {
+    id: 'q-1ano-br',
+    phaseId: 'fase-13',
+    target: { letter: 'BR', word: 'Brasil', icon: '🇧🇷', colorClass: 'bg-emerald-100 border-emerald-300 text-emerald-900' },
+    phonemeSound: '/br/',
+    spokenPrompt: 'Desafio do 1º Ano! Toque no encontro BR de Brasil e Brinquedo!',
+    hintText: 'Quando B e R se juntam, formam o som BR de Brasil!',
+    correctSlotIndex: 1,
+    distractors: [
+      { letter: 'CH', word: 'Chave', icon: '🔑', colorClass: 'bg-blue-100 border-blue-300 text-blue-900' },
+      { letter: 'PA', word: 'Pato', icon: '🦆', colorClass: 'bg-amber-100 border-amber-300 text-amber-900' },
+      { letter: 'SO', word: 'Sol', icon: '☀️', colorClass: 'bg-orange-100 border-orange-300 text-orange-900' },
+    ],
+  },
+  {
+    id: 'q-1ano-ch',
+    phaseId: 'fase-14',
+    target: { letter: 'CH', word: 'Chave', icon: '🔑', colorClass: 'bg-blue-100 border-blue-300 text-blue-900' },
+    phonemeSound: '/ch/',
+    spokenPrompt: 'Dígrafo do 1º Ano! Toque em CH de Chave e Chapéu!',
+    hintText: 'O C com H faz o som shhh de Chave e Chuva!',
+    correctSlotIndex: 2,
+    distractors: [
+      { letter: 'BR', word: 'Brasil', icon: '🇧🇷', colorClass: 'bg-emerald-100 border-emerald-300 text-emerald-900' },
+      { letter: 'MA', word: 'Maçã', icon: '🍎', colorClass: 'bg-rose-100 border-rose-300 text-rose-900' },
+      { letter: 'CA', word: 'Casa', icon: '🏠', colorClass: 'bg-amber-100 border-amber-300 text-amber-900' },
+    ],
+  },
+  {
+    id: 'q-1ano-luz',
+    phaseId: 'fase-15',
+    target: { letter: 'LUZ', word: 'Luz', icon: '🌟', colorClass: 'bg-amber-100 border-amber-300 text-amber-900' },
+    phonemeSound: '/luz/',
+    spokenPrompt: 'Leitura Brilhante do 1º Ano! Toque na palavra LUZ!',
+    hintText: 'Junte as letras L + U + Z para ler a palavra LUZ!',
+    correctSlotIndex: 0,
+    distractors: [
+      { letter: 'SOL', word: 'Sol', icon: '☀️', colorClass: 'bg-yellow-100 border-yellow-300 text-yellow-900' },
+      { letter: 'MAR', word: 'Mar', icon: '🌊', colorClass: 'bg-cyan-100 border-cyan-300 text-cyan-900' },
+      { letter: 'PÃO', word: 'Pão', icon: '🍞', colorClass: 'bg-orange-100 border-orange-300 text-orange-900' },
+    ],
+  },
 ];
 
 export const ACTIVITY_QUESTIONS: ActivityQuestion[] = PHASE_CHALLENGE_BLUEPRINTS.map(
@@ -1316,10 +1614,123 @@ export function validatePhaseQuestionSync(
 }
 
 /**
+ * Retorna todas as fases pertencentes ao ciclo da Educação Infantil (Níveis 1, 2 e 3).
+ */
+export function getEducacaoInfantilPhases(levels: LevelInfo[]): Phase[] {
+  return levels
+    .filter((lvl) => (lvl.cycle || (lvl.id <= 3 ? 'educacao_infantil' : 'primeiro_ano')) === 'educacao_infantil')
+    .flatMap((lvl) => lvl.phases);
+}
+
+/**
+ * Calcula estatísticas exatas de conclusão do ciclo de Educação Infantil.
+ */
+export function getEducacaoInfantilProgressStats(levels: LevelInfo[]): {
+  completedCount: number;
+  totalCount: number;
+  percent: number;
+  isCompleted: boolean;
+} {
+  const edInfantilPhases = getEducacaoInfantilPhases(levels);
+  const totalCount = edInfantilPhases.length;
+  const completedCount = edInfantilPhases.filter((p) => p.status === 'completed').length;
+  const percent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+  return {
+    completedCount,
+    totalCount,
+    percent,
+    isCompleted: totalCount > 0 && completedCount === totalCount,
+  };
+}
+
+/**
+ * Verifica se a criança concluiu 100% das fases e níveis da Educação Infantil.
+ */
+export function isEducacaoInfantilCompleted(levels: LevelInfo[]): boolean {
+  return getEducacaoInfantilProgressStats(levels).isCompleted;
+}
+
+/**
+ * Verifica se o acesso ao 1º Ano do Ensino Fundamental está liberado.
+ */
+export function isPrimeiroAnoAccessible(
+  levels: LevelInfo[],
+  childProfile?: Pick<ChildProfile, 'primeiroAnoUnlocked'> | null
+): boolean {
+  if (childProfile?.primeiroAnoUnlocked) return true;
+  if (isEducacaoInfantilCompleted(levels)) return true;
+  return levels
+    .filter((lvl) => lvl.cycle === 'primeiro_ano' || lvl.id >= 4)
+    .some((lvl) => lvl.phases.some((p) => p.status === 'current' || p.status === 'completed'));
+}
+
+/**
+ * Aplica a regra de bloqueio/desbloqueio do 1º Ano sobre os níveis da trilha.
+ */
+export function applyCycleUnlockToLevels(
+  levels: LevelInfo[],
+  explicitlyUnlocked: boolean = false
+): LevelInfo[] {
+  const edInfantilDone = isEducacaoInfantilCompleted(levels);
+  const allowPrimeiroAno = explicitlyUnlocked || edInfantilDone;
+
+  const updated = levels.map((lvl) => {
+    const isPrimeiroAnoLevel = lvl.cycle === 'primeiro_ano' || lvl.id >= 4;
+    if (!isPrimeiroAnoLevel) {
+      return {
+        ...lvl,
+        phases: lvl.phases.map((p) => ({ ...p })),
+      };
+    }
+
+    if (!allowPrimeiroAno) {
+      return {
+        ...lvl,
+        phases: lvl.phases.map((p) => ({
+          ...p,
+          status: 'locked' as const,
+          starsEarned: 0,
+        })),
+      };
+    }
+
+    const clonedPhases = lvl.phases.map((p) => ({ ...p }));
+    const hasActiveOrDone = clonedPhases.some(
+      (p) => p.status === 'current' || p.status === 'completed'
+    );
+    if (!hasActiveOrDone && clonedPhases.length > 0) {
+      clonedPhases[0].status = 'current';
+    }
+    return {
+      ...lvl,
+      phases: clonedPhases,
+    };
+  });
+
+  // Garante que haja pelo menos uma fase 'current' disponível na jornada
+  const allPhases = updated.flatMap((lvl) => lvl.phases);
+  const hasCurrent = allPhases.some((p) => p.status === 'current');
+  if (!hasCurrent) {
+    const firstEligible = updated
+      .filter((lvl) => allowPrimeiroAno || (lvl.cycle || 'educacao_infantil') === 'educacao_infantil')
+      .flatMap((lvl) => lvl.phases)
+      .find((p) => p.status !== 'completed');
+    if (firstEligible) {
+      firstEligible.status = 'current';
+    }
+  }
+
+  return updated;
+}
+
+/**
  * Reconcilia níveis salvos no localStorage com a estrutura canônica de INITIAL_LEVELS,
  * preservando progresso (status e estrelas) sem permitir ordem ou letras desatualizadas.
  */
-export function reconcileLevelsWithCanonical(savedLevels: LevelInfo[]): LevelInfo[] {
+export function reconcileLevelsWithCanonical(
+  savedLevels: LevelInfo[],
+  explicitlyUnlockedPrimeiroAno: boolean = false
+): LevelInfo[] {
   const savedPhaseMap = new Map<string, LevelInfo['phases'][number]>();
   for (const lvl of savedLevels) {
     for (const p of lvl.phases || []) {
@@ -1331,7 +1742,7 @@ export function reconcileLevelsWithCanonical(savedLevels: LevelInfo[]): LevelInf
     ...canonicalLevel,
     phases: canonicalLevel.phases.map((canonicalPhase) => {
       const saved = savedPhaseMap.get(canonicalPhase.id);
-      if (!saved) return canonicalPhase;
+      if (!saved) return { ...canonicalPhase };
       return {
         ...canonicalPhase,
         starsEarned:
@@ -1348,17 +1759,7 @@ export function reconcileLevelsWithCanonical(savedLevels: LevelInfo[]): LevelInf
     }),
   }));
 
-  // Garante que exista uma fase marcada como 'current' caso a fase anterior já tenha sido concluída
-  const allPhases = reconciled.flatMap((lvl) => lvl.phases);
-  const hasCurrent = allPhases.some((p) => p.status === 'current');
-  if (!hasCurrent) {
-    const firstNonCompleted = allPhases.find((p) => p.status !== 'completed');
-    if (firstNonCompleted) {
-      firstNonCompleted.status = 'current';
-    }
-  }
-
-  return reconciled;
+  return applyCycleUnlockToLevels(reconciled, explicitlyUnlockedPrimeiroAno);
 }
 
 export function validateAllActivityQuestions(
@@ -1503,6 +1904,15 @@ export const INITIAL_MEDALS: Medal[] = [
     category: 'leitura',
     unlocked: false,
     color: 'from-emerald-400 to-teal-500',
+  },
+  {
+    id: 'm11',
+    title: 'Formando da Educação Infantil',
+    description: 'Completou 100% da Educação Infantil e desbloqueou o 1º Ano Fundamental!',
+    icon: '🎓',
+    category: 'conquista',
+    unlocked: false,
+    color: 'from-amber-400 to-rose-500',
   },
 ];
 

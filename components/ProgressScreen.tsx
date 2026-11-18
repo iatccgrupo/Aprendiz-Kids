@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Award, Star, Compass, CheckCircle2, Lock, Sparkles, Trophy, ArrowRight } from 'lucide-react';
-import { Medal, ChildProfile } from '@/lib/types';
+import { Award, Star, Compass, CheckCircle2, Lock, Sparkles, Trophy, ArrowRight, GraduationCap } from 'lucide-react';
+import { Medal, ChildProfile, Phase } from '@/lib/types';
 import { AVATAR_OPTIONS } from '@/lib/game-data';
 import { playPopSound } from '@/lib/sound';
 
@@ -12,6 +12,8 @@ interface ProgressScreenProps {
   medals: Medal[];
   completedPhasesCount: number;
   totalPhasesCount: number;
+  currentPhase?: Phase;
+  primeiroAnoUnlocked?: boolean;
   onNavigateMap: () => void;
 }
 
@@ -21,6 +23,8 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
   medals,
   completedPhasesCount,
   totalPhasesCount,
+  currentPhase,
+  primeiroAnoUnlocked = false,
   onNavigateMap,
 }) => {
   const [filter, setFilter] = useState<'all' | 'unlocked' | 'locked'>('all');
@@ -63,8 +67,18 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
 
             <div>
               <div className="inline-flex items-center gap-1.5 rounded-full bg-amber-950/20 px-3 py-1 text-xs font-black uppercase tracking-wider text-amber-950 mb-1">
-                <Sparkles className="h-3.5 w-3.5 text-yellow-200" />
-                <span>Nível Atual: Ilha das Vogais (Fase 3)</span>
+                {primeiroAnoUnlocked ? (
+                  <GraduationCap className="h-3.5 w-3.5 text-amber-950" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5 text-yellow-200" />
+                )}
+                <span>
+                  {primeiroAnoUnlocked
+                    ? 'Ciclo Atual: 1º Ano Fundamental Desbloqueado'
+                    : currentPhase
+                    ? `Fase Atual: ${currentPhase.title} (Fase ${currentPhase.number})`
+                    : 'Ciclo: Educação Infantil'}
+                </span>
               </div>
               <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight font-display text-amber-950">
                 {childProfile.name}

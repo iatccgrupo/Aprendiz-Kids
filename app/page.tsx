@@ -10,6 +10,7 @@ import { ProgressScreen } from '@/components/ProgressScreen';
 import { ParentDashboard, ParentalGateModal } from '@/components/ParentDashboard';
 import { StorybookScreen } from '@/components/StorybookScreen';
 import { LiveVoiceAssistant } from '@/components/LiveVoiceAssistant';
+import { CycleCelebrationScreen } from '@/components/CycleCelebrationScreen';
 import {
   ScreenState,
   ChildProfile,
@@ -22,16 +23,28 @@ import {
 import {
   INITIAL_LEVELS,
   INITIAL_MEDALS,
+  applyCycleUnlockToLevels,
+  getEducacaoInfantilProgressStats,
   getQuestionByPhaseId,
+  isEducacaoInfantilCompleted,
+  isPrimeiroAnoAccessible,
   reconcileLevelsWithCanonical,
 } from '@/lib/game-data';
-import { playPopSound, playSuccessSound, stopSpeaking } from '@/lib/sound';
+import {
+  DEFAULT_GEMINI_TTS_VOICE,
+  buildPrimeiroAnoUnlockSpeech,
+  playPopSound,
+  playSuccessSound,
+  prefetchSpeechInPortuguese,
+  stopSpeaking,
+} from '@/lib/sound';
 import {
   savePhaseProgressToSupabase,
   saveMedalToSupabase,
   logActivityToSupabase,
   signOutWithSupabase,
   saveInitialProgressForChildToSupabase,
+  unlockPrimeiroAnoInSupabase,
   saveLocalAccountWorkspace,
   isUuid,
   RestoredWorkspace,
@@ -67,18 +80,28 @@ export default function HomePage() {
 
   const [isParentGateOpen, setIsParentGateOpen] = useState(false);
 
-  // Game Levels & Phases (always reconciled with canonical Fase 1-5 & Nível 2-3 order)
+  // Game Levels & Phases (always reconciled with canonical Fase 1-15 order & cycle unlock state)
   const [levels, setLevels] = useState<LevelInfo[]>(() => {
     if (typeof window === 'undefined') return INITIAL_LEVELS;
     try {
       const saved = localStorage.getItem('aventura_levels');
-      return saved ? reconcileLevelsWithCanonical(JSON.parse(saved) as LevelInfo[]) : INITIAL_LEVELS;
+      const savedProfileRaw = localStorage.getItem('aventura_child_profile');
+      const savedProfile = savedProfileRaw
+        ? (JSON.parse(savedProfileRaw) as ChildProfile)
+        : null;
+      return saved
+        ? reconcileLevelsWithCanonical(
+            JSON.parse(saved) as LevelInfo[],
+            Boolean(savedProfile?.primeiroAnoUnlocked)
+          )
+        : INITIAL_LEVELS;
     } catch {
       return INITIAL_LEVELS;
     }
   });
 
   const [currentPhase, setCurrentPhase] = useState<Phase>(INITIAL_LEVELS[0].phases[2]); // Fase 3 (Vogal I - Iguana)
+  const [justUnlockedPrimeiroAno, setJustUnlockedPrimeiroAno] = useState(false);
 
   // Activity & Feedback State (question sempre derivada de currentPhase.id)
   const [lastSelectedOption, setLastSelectedOption] = useState<ActivityOption | null>(null);
@@ -143,6 +166,8 @@ export default function HomePage() {
   }, 0);
 
   const totalPhasesCount = activeLevels.reduce((acc, lvl) => acc + lvl.phases.length, 0);
+  const primeiroAnoUnlocked = isPrimeiroAnoAccessible(activeLevels, activeChildProfile);
+  const edInfantilStats = getEducacaoInfantilProgressStats(activeLevels);
 
   // Helper to mirror active child + completed stages into per-email local backup
   const persistAccountBackup = (
@@ -177,19 +202,30 @@ export default function HomePage() {
     profile: ChildProfile,
     restoredWorkspace?: Partial<RestoredWorkspace>
   ) => {
-    setChildProfile(profile);
-    try {
-      localStorage.setItem('aventura_child_profile', JSON.stringify(profile));
-    } catch {}
-
     let nextLevels = levels;
     if (restoredWorkspace?.levels) {
-      nextLevels = reconcileLevelsWithCanonical(restoredWorkspace.levels);
+      nextLevels = reconcileLevelsWithCanonical(
+        restoredWorkspace.levels,
+        Boolean(profile.primeiroAnoUnlocked)
+      );
       setLevels(nextLevels);
       try {
         localStorage.setItem('aventura_levels', JSON.stringify(nextLevels));
       } catch {}
     }
+
+    const isUnlocked = isPrimeiroAnoAccessible(nextLevels, profile);
+    const syncedProfile: ChildProfile = {
+      ...profile,
+      primeiroAnoUnlocked: isUnlocked,
+      cycleStage: isUnlocked ? 'primeiro_ano' : 'educacao_infantil',
+      ageGroup: isUnlocked ? '1º Ano Fundamental (6 a 7 anos)' : profile.ageGroup,
+    };
+
+    setChildProfile(syncedProfile);
+    try {
+      localStorage.setItem('aventura_child_profile', JSON.stringify(syncedProfile));
+    } catch {}
 
     let nextMedals = medals;
     if (restoredWorkspace?.medals) {
@@ -213,17 +249,19 @@ export default function HomePage() {
       } catch {}
     }
 
-    persistAccountBackup(profile, nextLevels, nextMedals, nextBooks);
+    persistAccountBackup(syncedProfile, nextLevels, nextMedals, nextBooks);
 
-    if (isUuid(profile.id)) {
+    if (isUuid(syncedProfile.id)) {
       void saveInitialProgressForChildToSupabase(
-        profile.id,
+        syncedProfile.id,
         nextLevels,
         nextMedals,
-        nextBooks
+        nextBooks,
+        syncedProfile
       );
     }
 
+    setJustUnlockedPrimeiroAno(false);
     setAuthInitialStep('auth');
     setCurrentScreen('map');
   };
@@ -256,6 +294,8 @@ export default function HomePage() {
     }
 
     if (isCorrect) {
+      const wasPrimeiroAnoUnlocked = isPrimeiroAnoAccessible(levels, childProfile);
+
       // Sincronizar fase concluída no Supabase
       if (childProfile) {
         savePhaseProgressToSupabase(
@@ -268,7 +308,7 @@ export default function HomePage() {
       }
 
       // Mark current phase as completed with 3 stars!
-      const updatedLevels = levels.map((lvl) => ({
+      const completedLevels = levels.map((lvl) => ({
         ...lvl,
         phases: lvl.phases.map((p) => {
           if (p.id === currentPhase.id) {
@@ -278,13 +318,13 @@ export default function HomePage() {
         }),
       }));
 
-      // Unlock next phase if available
-      const allPhases = updatedLevels.flatMap((lvl) => lvl.phases);
+      // Unlock next phase if available within eligible cycle
+      const allPhases = completedLevels.flatMap((lvl) => lvl.phases);
       const currentIndex = allPhases.findIndex((p) => p.id === currentPhase.id);
 
       if (currentIndex >= 0 && currentIndex + 1 < allPhases.length) {
         const nextPhaseId = allPhases[currentIndex + 1].id;
-        updatedLevels.forEach((lvl) => {
+        completedLevels.forEach((lvl) => {
           lvl.phases.forEach((p) => {
             if (p.id === nextPhaseId && p.status === 'locked') {
               p.status = 'current';
@@ -292,6 +332,14 @@ export default function HomePage() {
           });
         });
       }
+
+      // Enforce 100% Educação Infantil completion rule & auto-unlock 1º Ano
+      const edInfantilCompletedNow = isEducacaoInfantilCompleted(completedLevels);
+      const updatedLevels = applyCycleUnlockToLevels(
+        completedLevels,
+        wasPrimeiroAnoUnlocked || edInfantilCompletedNow
+      );
+      const unlockedCycleNow = edInfantilCompletedNow && !wasPrimeiroAnoUnlocked;
 
       const level1Completed = updatedLevels[0].phases.every((p) => p.status === 'completed');
       const level3Completed = updatedLevels[2]?.phases.every((p) => p.status === 'completed');
@@ -301,17 +349,37 @@ export default function HomePage() {
         localStorage.setItem('aventura_levels', JSON.stringify(updatedLevels));
       } catch {}
 
-      // Sincronizar medalhas desbloqueadas com Supabase
-      if (childProfile) {
-        saveMedalToSupabase(childProfile.id, 'm4');
+      let nextChildProfile = childProfile;
+      if (edInfantilCompletedNow && childProfile) {
+        const unlockedDateStr =
+          childProfile.primeiroAnoUnlockedAt || new Date().toLocaleDateString('pt-BR');
+        nextChildProfile = {
+          ...childProfile,
+          cycleStage: 'primeiro_ano',
+          ageGroup: '1º Ano Fundamental (6 a 7 anos)',
+          primeiroAnoUnlocked: true,
+          primeiroAnoUnlockedAt: unlockedDateStr,
+        };
+        setChildProfile(nextChildProfile);
+        try {
+          localStorage.setItem('aventura_child_profile', JSON.stringify(nextChildProfile));
+        } catch {}
+      }
+
+      // Sincronizar medalhas e desbloqueio de ciclo no Supabase
+      if (nextChildProfile) {
+        saveMedalToSupabase(nextChildProfile.id, 'm4');
         if (level1Completed) {
-          saveMedalToSupabase(childProfile.id, 'm5');
+          saveMedalToSupabase(nextChildProfile.id, 'm5');
         }
         if (level3Completed) {
-          saveMedalToSupabase(childProfile.id, 'm8');
+          saveMedalToSupabase(nextChildProfile.id, 'm8');
         }
         if (totalStars + 3 >= 15) {
-          saveMedalToSupabase(childProfile.id, 'm6');
+          saveMedalToSupabase(nextChildProfile.id, 'm6');
+        }
+        if (edInfantilCompletedNow) {
+          void unlockPrimeiroAnoInSupabase(nextChildProfile.id);
         }
       }
 
@@ -330,19 +398,35 @@ export default function HomePage() {
           if (m.id === 'm6' && totalStars + 3 >= 15 && !m.unlocked) {
             return { ...m, unlocked: true, unlockedDate: 'Hoje' };
           }
+          if (m.id === 'm11' && edInfantilCompletedNow && !m.unlocked) {
+            return { ...m, unlocked: true, unlockedDate: 'Hoje' };
+          }
           return m;
         });
         try {
           localStorage.setItem('aventura_medals', JSON.stringify(updatedMedals));
         } catch {}
         persistAccountBackup(
-          childProfile,
+          nextChildProfile,
           updatedLevels,
           updatedMedals,
           completedBookIds
         );
         return updatedMedals;
       });
+
+      if (unlockedCycleNow) {
+        setJustUnlockedPrimeiroAno(true);
+        if (soundEnabled) {
+          prefetchSpeechInPortuguese(
+            buildPrimeiroAnoUnlockSpeech(nextChildProfile?.name),
+            false,
+            DEFAULT_GEMINI_TTS_VOICE
+          );
+        }
+        setCurrentScreen('cycle_unlock');
+        return;
+      }
     }
 
     setCurrentScreen('feedback');
@@ -456,12 +540,30 @@ export default function HomePage() {
     setLevels(INITIAL_LEVELS);
     setMedals(INITIAL_MEDALS);
     setCompletedBookIds([]);
+    setJustUnlockedPrimeiroAno(false);
+
+    const resetProfile: ChildProfile | null = activeChildProfile
+      ? {
+          ...activeChildProfile,
+          cycleStage: 'educacao_infantil',
+          primeiroAnoUnlocked: false,
+          primeiroAnoUnlockedAt: undefined,
+        }
+      : null;
+
+    if (resetProfile) {
+      setChildProfile(resetProfile);
+      try {
+        localStorage.setItem('aventura_child_profile', JSON.stringify(resetProfile));
+      } catch {}
+    }
+
     try {
       localStorage.removeItem('aventura_levels');
       localStorage.removeItem('aventura_medals');
       localStorage.removeItem('aventura_completed_books');
     } catch {}
-    persistAccountBackup(activeChildProfile, INITIAL_LEVELS, INITIAL_MEDALS, []);
+    persistAccountBackup(resetProfile, INITIAL_LEVELS, INITIAL_MEDALS, []);
     playSuccessSound();
   };
 
@@ -478,6 +580,7 @@ export default function HomePage() {
     setLevels(INITIAL_LEVELS);
     setMedals(INITIAL_MEDALS);
     setCompletedBookIds([]);
+    setJustUnlockedPrimeiroAno(false);
     setAuthInitialStep('auth');
     try {
       localStorage.removeItem('aventura_child_profile');
@@ -519,6 +622,8 @@ export default function HomePage() {
         }}
         childProfile={activeChildProfile}
         totalStars={totalStars}
+        primeiroAnoUnlocked={primeiroAnoUnlocked}
+        highlightPrimeiroAno={justUnlockedPrimeiroAno}
         soundEnabled={soundEnabled}
         onToggleSound={() => {
           playPopSound();
@@ -568,6 +673,7 @@ export default function HomePage() {
             levels={activeLevels}
             childProfile={activeChildProfile}
             totalStars={totalStars}
+            justUnlockedPrimeiroAno={justUnlockedPrimeiroAno}
             onSelectPhase={handleSelectPhase}
             onNavigateProgress={() => setCurrentScreen('progress')}
           />
@@ -615,6 +721,28 @@ export default function HomePage() {
           />
         )}
 
+        {currentScreen === 'cycle_unlock' && activeChildProfile && (
+          <CycleCelebrationScreen
+            childProfile={activeChildProfile}
+            soundEnabled={soundEnabled}
+            totalStars={totalStars}
+            edInfantilTotalPhases={edInfantilStats.totalCount}
+            onGoToTrail={() => setCurrentScreen('map')}
+            onStartPrimeiroAno={() => {
+              const primeiroAnoLevel = activeLevels.find(
+                (lvl) => lvl.cycle === 'primeiro_ano' || lvl.id >= 4
+              );
+              const firstUnlockedPhase =
+                primeiroAnoLevel?.phases.find((p) => p.status !== 'locked') ||
+                primeiroAnoLevel?.phases[0];
+              if (firstUnlockedPhase) {
+                setCurrentPhase(firstUnlockedPhase);
+              }
+              setCurrentScreen('activity');
+            }}
+          />
+        )}
+
         {currentScreen === 'progress' && activeChildProfile && (
           <ProgressScreen
             childProfile={activeChildProfile}
@@ -622,6 +750,8 @@ export default function HomePage() {
             medals={activeMedals}
             completedPhasesCount={completedPhasesCount}
             totalPhasesCount={totalPhasesCount}
+            currentPhase={currentPhase}
+            primeiroAnoUnlocked={primeiroAnoUnlocked}
             onNavigateMap={() => setCurrentScreen('map')}
           />
         )}

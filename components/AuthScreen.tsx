@@ -260,7 +260,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               restoredChild.id,
               merged.levels,
               merged.medals,
-              merged.completedBookIds
+              merged.completedBookIds,
+              restoredChild
             );
           }
 
@@ -313,6 +314,9 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         avatarId: selectedAvatarId,
         avatarCustomUrl: customPhotoUrl || undefined,
         ageGroup,
+        cycleStage: preservedChild?.cycleStage,
+        primeiroAnoUnlocked: preservedChild?.primeiroAnoUnlocked,
+        primeiroAnoUnlockedAt: preservedChild?.primeiroAnoUnlockedAt,
         createdAt: preservedChild?.createdAt || new Date().toLocaleDateString('pt-BR'),
       };
 
@@ -348,7 +352,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           finalProfile.id,
           levelsToSync,
           medalsToSync,
-          booksToSync
+          booksToSync,
+          finalProfile
         );
       }
 

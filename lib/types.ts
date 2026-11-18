@@ -1,9 +1,14 @@
+export type LearningCycle = 'educacao_infantil' | 'primeiro_ano';
+
 export interface ChildProfile {
   id: string;
   name: string;
   avatarId: string;
   avatarCustomUrl?: string;
-  ageGroup: string; // e.g. '4 a 6 anos' | '6 a 8 anos'
+  ageGroup: string; // e.g. 'Educação Infantil (4 a 5 anos)' | '1º Ano Fundamental (6 a 7 anos)'
+  cycleStage?: LearningCycle;
+  primeiroAnoUnlocked?: boolean;
+  primeiroAnoUnlockedAt?: string;
   createdAt: string;
 }
 
@@ -28,6 +33,7 @@ export interface LevelInfo {
   subtitle: string;
   badge: string;
   accentColor: string;
+  cycle?: LearningCycle;
   phases: Phase[];
 }
 
@@ -97,4 +103,13 @@ export interface Storybook {
   pages: StoryPage[];
 }
 
-export type ScreenState = 'auth' | 'map' | 'activity' | 'feedback' | 'progress' | 'dashboard' | 'library';
+export type ScreenState =
+  | 'auth'
+  | 'map'
+  | 'activity'
+  | 'feedback'
+  | 'cycle_unlock'
+  | 'progress'
+  | 'dashboard'
+  | 'library';
+

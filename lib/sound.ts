@@ -668,3 +668,9 @@ export function buildRetryFeedbackSpeech(childName: string): string {
   return `Quase lá, ${childName}! Que tal tentar de novo?`;
 }
 
+export function buildPrimeiroAnoUnlockSpeech(childName?: string): string {
+  const cleanName = childName?.trim();
+  const greeting = cleanName ? `Parabéns, ${cleanName}!` : 'Parabéns!';
+  return `${greeting} Você completou a Educação Infantil e agora o 1º Ano do Ensino Fundamental foi desbloqueado! Vamos continuar a aventura?`;
+}
+

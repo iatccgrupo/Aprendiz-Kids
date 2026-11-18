@@ -3,6 +3,9 @@ import { ChildProfile, LevelInfo, Medal, Storybook } from '../types';
 import {
   INITIAL_LEVELS,
   INITIAL_MEDALS,
+  PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID,
+  isEducacaoInfantilCompleted,
+  isPrimeiroAnoAccessible,
   reconcileLevelsWithCanonical,
 } from '../game-data';
 import { isPhonemeAnswerCorrect } from '../utils';
@@ -409,6 +412,9 @@ export async function saveChildProfileWithResultToSupabase(
           avatarId: row.avatar_id,
           avatarCustomUrl: row.avatar_custom_url || undefined,
           ageGroup: row.age_group,
+          cycleStage: child.cycleStage,
+          primeiroAnoUnlocked: child.primeiroAnoUnlocked,
+          primeiroAnoUnlockedAt: child.primeiroAnoUnlockedAt,
           createdAt: row.created_at
             ? new Date(row.created_at).toLocaleDateString('pt-BR')
             : child.createdAt,
@@ -496,8 +502,9 @@ export async function loadChildWorkspaceFromSupabase(
       status: 'completed' | 'current' | 'locked';
     }>;
 
+    const progressMap = new Map(typedProgress.map((p) => [p.phase_id, p]));
+
     if (typedProgress.length > 0) {
-      const progressMap = new Map(typedProgress.map((p) => [p.phase_id, p]));
       const flatPhases = mergedLevels.flatMap((lvl) => lvl.phases);
 
       flatPhases.forEach((phase) => {
@@ -527,8 +534,8 @@ export async function loadChildWorkspaceFromSupabase(
       unlocked_at: string;
     }>;
 
+    const medalMap = new Map(typedMedals.map((m) => [m.medal_id, m.unlocked_at]));
     if (typedMedals.length > 0) {
-      const medalMap = new Map(typedMedals.map((m) => [m.medal_id, m.unlocked_at]));
       mergedMedals.forEach((medal) => {
         const unlockedAt = medalMap.get(medal.id);
         if (unlockedAt) {
@@ -538,13 +545,38 @@ export async function loadChildWorkspaceFromSupabase(
       });
     }
 
+    const hasUnlockMarker =
+      progressMap.get(PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID)?.status === 'completed';
+    const hasGraduationMedal = medalMap.has('m11');
+    const primeiroAnoUnlocked =
+      hasUnlockMarker ||
+      hasGraduationMedal ||
+      isPrimeiroAnoAccessible(mergedLevels, null);
+
+    if (primeiroAnoUnlocked) {
+      child.primeiroAnoUnlocked = true;
+      child.cycleStage = 'primeiro_ano';
+      const unlockedAtRaw = medalMap.get('m11');
+      if (unlockedAtRaw) {
+        child.primeiroAnoUnlockedAt = new Date(unlockedAtRaw).toLocaleDateString('pt-BR');
+      }
+      const m11 = mergedMedals.find((m) => m.id === 'm11');
+      if (m11 && !m11.unlocked) {
+        m11.unlocked = true;
+        m11.unlockedDate = child.primeiroAnoUnlockedAt || 'Hoje';
+      }
+    } else {
+      child.cycleStage = 'educacao_infantil';
+      child.primeiroAnoUnlocked = false;
+    }
+
     const completedBookIds = typedProgress
       .filter((p) => p.phase_id.startsWith('book-') && p.status === 'completed')
       .map((p) => p.phase_id.replace(/^book-/, ''));
 
     return {
       child,
-      levels: reconcileLevelsWithCanonical(mergedLevels),
+      levels: reconcileLevelsWithCanonical(mergedLevels, primeiroAnoUnlocked),
       medals: mergedMedals,
       completedBookIds,
     };
@@ -596,14 +628,18 @@ export async function saveInitialProgressForChildToSupabase(
   childId: string,
   levels: LevelInfo[],
   medals: Medal[] = [],
-  completedBookIds: string[] = []
+  completedBookIds: string[] = [],
+  childProfile?: Pick<ChildProfile, 'primeiroAnoUnlocked'> | null
 ): Promise<void> {
   const supabase = getSupabaseClient();
   if (!supabase || !isUuid(childId)) return;
 
   try {
     const nowIso = new Date().toISOString();
-    const phaseRows = levels
+    const primeiroAnoUnlocked = isPrimeiroAnoAccessible(levels, childProfile);
+    const syncedLevels = reconcileLevelsWithCanonical(levels, primeiroAnoUnlocked);
+
+    const phaseRows = syncedLevels
       .flatMap((lvl) => lvl.phases)
       .filter((phase) => phase.status !== 'locked')
       .map((phase) => ({
@@ -616,6 +652,20 @@ export async function saveInitialProgressForChildToSupabase(
         updated_at: nowIso,
       }));
 
+    const cycleMarkerRows = primeiroAnoUnlocked
+      ? [
+          {
+            child_id: childId,
+            phase_id: PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID,
+            level_id: 4,
+            stars_earned: 3,
+            status: 'completed' as const,
+            completed_at: nowIso,
+            updated_at: nowIso,
+          },
+        ]
+      : [];
+
     const bookRows = completedBookIds.map((bookId) => ({
       child_id: childId,
       phase_id: `book-${bookId}`,
@@ -626,12 +676,27 @@ export async function saveInitialProgressForChildToSupabase(
       updated_at: nowIso,
     }));
 
-    const rowsToInsert = [...phaseRows, ...bookRows];
+    const rowsToInsert = [...phaseRows, ...cycleMarkerRows, ...bookRows];
 
     if (rowsToInsert.length > 0) {
       await supabase
         .from('game_progress')
         .upsert(rowsToInsert as any, { onConflict: 'child_id,phase_id' });
+    }
+
+    if (primeiroAnoUnlocked) {
+      await (
+        supabase.from('children') as unknown as {
+          update: (values: { age_group: string; updated_at: string }) => {
+            eq: (col: string, val: string) => Promise<unknown>;
+          };
+        }
+      )
+        .update({
+          age_group: '1º Ano Fundamental (6 a 7 anos)',
+          updated_at: nowIso,
+        })
+        .eq('id', childId);
     }
 
     const unlockedMedals = medals.filter((m) => m.unlocked);
@@ -647,6 +712,87 @@ export async function saveInitialProgressForChildToSupabase(
     }
   } catch {
     // Ignore sync errors
+  }
+}
+
+// 4d-bis. Persistir desbloqueio automático do ciclo 1º Ano Fundamental no Supabase
+export async function unlockPrimeiroAnoInSupabase(
+  childId: string,
+  unlockedAtIso: string = new Date().toISOString()
+): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase || !isUuid(childId)) return false;
+
+  try {
+    await (
+      supabase.from('children') as unknown as {
+        update: (values: { age_group: string; updated_at: string }) => {
+          eq: (col: string, val: string) => Promise<unknown>;
+        };
+      }
+    )
+      .update({
+        age_group: '1º Ano Fundamental (6 a 7 anos)',
+        updated_at: unlockedAtIso,
+      })
+      .eq('id', childId);
+
+    const { data: existingPhase13 } = await supabase
+      .from('game_progress')
+      .select('status, stars_earned')
+      .eq('child_id', childId)
+      .eq('phase_id', 'fase-13')
+      .maybeSingle();
+
+    const rowsToUpsert: Array<{
+      child_id: string;
+      phase_id: string;
+      level_id: number;
+      stars_earned: number;
+      status: 'completed' | 'current';
+      completed_at: string | null;
+      updated_at: string;
+    }> = [
+      {
+        child_id: childId,
+        phase_id: PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID,
+        level_id: 4,
+        stars_earned: 3,
+        status: 'completed',
+        completed_at: unlockedAtIso,
+        updated_at: unlockedAtIso,
+      },
+    ];
+
+    const existingStatus = (existingPhase13 as { status?: string } | null)?.status;
+    if (!existingStatus || existingStatus === 'locked') {
+      rowsToUpsert.push({
+        child_id: childId,
+        phase_id: 'fase-13',
+        level_id: 4,
+        stars_earned: 0,
+        status: 'current',
+        completed_at: null,
+        updated_at: unlockedAtIso,
+      });
+    }
+
+    const { error: progressError } = await supabase
+      .from('game_progress')
+      .upsert(rowsToUpsert as any, { onConflict: 'child_id,phase_id' });
+
+    await supabase.from('medals_unlocked').upsert(
+      {
+        child_id: childId,
+        medal_id: 'm11',
+        unlocked_at: unlockedAtIso,
+      } as any,
+      { onConflict: 'child_id,medal_id' }
+    );
+
+    return !progressError;
+  } catch {
+    return false;
   }
 }
 
@@ -675,10 +821,20 @@ export function saveLocalAccountWorkspace(
   try {
     const raw = localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY);
     const parsed: Record<string, SavedLocalAccountSnapshot> = raw ? JSON.parse(raw) : {};
+    const unlocked = isPrimeiroAnoAccessible(snapshot.levels, snapshot.child);
+    const syncedChild = snapshot.child
+      ? {
+          ...snapshot.child,
+          primeiroAnoUnlocked: unlocked,
+          cycleStage: unlocked ? ('primeiro_ano' as const) : ('educacao_infantil' as const),
+        }
+      : null;
+
     parsed[key] = {
       ...snapshot,
+      child: syncedChild,
       parentEmail: key,
-      levels: reconcileLevelsWithCanonical(snapshot.levels),
+      levels: reconcileLevelsWithCanonical(snapshot.levels, unlocked),
       updatedAt: new Date().toISOString(),
     };
     localStorage.setItem(SAVED_ACCOUNTS_STORAGE_KEY, JSON.stringify(parsed));
@@ -699,11 +855,26 @@ export function loadLocalAccountWorkspace(email: string): RestoredWorkspace | nu
     const entry = parsed[key];
     if (!entry || !entry.child) return null;
 
+    const baseLevels = entry.levels || cloneInitialLevels();
+    const unlocked = isPrimeiroAnoAccessible(baseLevels, entry.child);
     const savedMedalMap = new Map((entry.medals || []).map((m) => [m.id, m]));
+    const restoredMedals = cloneInitialMedals().map((base) => savedMedalMap.get(base.id) || base);
+    if (unlocked) {
+      const m11 = restoredMedals.find((m) => m.id === 'm11');
+      if (m11 && !m11.unlocked) {
+        m11.unlocked = true;
+        m11.unlockedDate = entry.child.primeiroAnoUnlockedAt || 'Hoje';
+      }
+    }
+
     return {
-      child: entry.child,
-      levels: reconcileLevelsWithCanonical(entry.levels || cloneInitialLevels()),
-      medals: cloneInitialMedals().map((base) => savedMedalMap.get(base.id) || base),
+      child: {
+        ...entry.child,
+        primeiroAnoUnlocked: unlocked,
+        cycleStage: unlocked ? 'primeiro_ano' : 'educacao_infantil',
+      },
+      levels: reconcileLevelsWithCanonical(baseLevels, unlocked),
+      medals: restoredMedals,
       completedBookIds: Array.isArray(entry.completedBookIds) ? entry.completedBookIds : [],
     };
   } catch {
@@ -717,9 +888,17 @@ export function mergeRestoredWorkspaces(
   secondary: RestoredWorkspace | null
 ): RestoredWorkspace {
   if (!secondary) {
+    const unlockedPrimary = isPrimeiroAnoAccessible(primary.levels, primary.child);
     return {
       ...primary,
-      levels: reconcileLevelsWithCanonical(primary.levels),
+      child: primary.child
+        ? {
+            ...primary.child,
+            primeiroAnoUnlocked: unlockedPrimary,
+            cycleStage: unlockedPrimary ? 'primeiro_ano' : 'educacao_infantil',
+          }
+        : null,
+      levels: reconcileLevelsWithCanonical(primary.levels, unlockedPrimary),
     };
   }
 
@@ -763,9 +942,38 @@ export function mergeRestoredWorkspaces(
     new Set([...(primary.completedBookIds || []), ...(secondary.completedBookIds || [])])
   );
 
+  const unlocked =
+    isEducacaoInfantilCompleted(mergedLevels) ||
+    isPrimeiroAnoAccessible(mergedLevels, primary.child) ||
+    isPrimeiroAnoAccessible(mergedLevels, secondary.child) ||
+    Boolean(mergedMedals.find((m) => m.id === 'm11')?.unlocked);
+
+  if (unlocked) {
+    const m11 = mergedMedals.find((m) => m.id === 'm11');
+    if (m11 && !m11.unlocked) {
+      m11.unlocked = true;
+      m11.unlockedDate = 'Hoje';
+    }
+  }
+
+  const baseChild = primary.child || secondary.child;
+  const mergedChild: ChildProfile | null = baseChild
+    ? {
+        ...baseChild,
+        ageGroup: unlocked
+          ? '1º Ano Fundamental (6 a 7 anos)'
+          : baseChild.ageGroup,
+        cycleStage: unlocked ? 'primeiro_ano' : 'educacao_infantil',
+        primeiroAnoUnlocked: unlocked,
+        primeiroAnoUnlockedAt:
+          primary.child?.primeiroAnoUnlockedAt ||
+          secondary.child?.primeiroAnoUnlockedAt,
+      }
+    : null;
+
   return {
-    child: primary.child || secondary.child,
-    levels: reconcileLevelsWithCanonical(mergedLevels),
+    child: mergedChild,
+    levels: reconcileLevelsWithCanonical(mergedLevels, unlocked),
     medals: mergedMedals,
     completedBookIds: mergedBooks,
   };

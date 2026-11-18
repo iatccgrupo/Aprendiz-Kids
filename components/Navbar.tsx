@@ -2,7 +2,19 @@
 
 import React from 'react';
 import Image from 'next/image';
-import { Compass, Sparkles, User, Award, ShieldCheck, Volume2, VolumeX, BookOpen, Mic } from 'lucide-react';
+import {
+  Compass,
+  Sparkles,
+  User,
+  Award,
+  ShieldCheck,
+  Volume2,
+  VolumeX,
+  BookOpen,
+  Mic,
+  KeyRound,
+  Star,
+} from 'lucide-react';
 import { ChildProfile, ScreenState } from '@/lib/types';
 import { AVATAR_OPTIONS } from '@/lib/game-data';
 
@@ -11,6 +23,8 @@ interface NavbarProps {
   onNavigate: (screen: ScreenState) => void;
   childProfile: ChildProfile | null;
   totalStars: number;
+  primeiroAnoUnlocked?: boolean;
+  highlightPrimeiroAno?: boolean;
   soundEnabled: boolean;
   onToggleSound: () => void;
   onOpenParentGate: () => void;
@@ -23,6 +37,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   childProfile,
   totalStars,
+  primeiroAnoUnlocked = false,
+  highlightPrimeiroAno = false,
   soundEnabled,
   onToggleSound,
   onOpenParentGate,
@@ -68,6 +84,23 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Compass className="h-4 w-4 text-blue-500" />
             <span className="whitespace-nowrap">Trilha de Fases</span>
+            {childProfile && primeiroAnoUnlocked && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black whitespace-nowrap shrink-0 ${
+                  highlightPrimeiroAno
+                    ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-white shadow-xs'
+                    : 'bg-amber-100 text-amber-900 border border-amber-300'
+                }`}
+                title="1º Ano do Ensino Fundamental Desbloqueado!"
+              >
+                {highlightPrimeiroAno ? (
+                  <Star className="h-3 w-3 fill-white" />
+                ) : (
+                  <KeyRound className="h-3 w-3 text-amber-700" />
+                )}
+                <span>1º Ano</span>
+              </span>
+            )}
           </button>
 
           <button
@@ -199,11 +232,16 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="flex md:hidden items-center justify-around border-t border-slate-100 bg-white/90 px-1 py-2">
         <button
           onClick={() => onNavigate(childProfile ? 'map' : 'auth')}
-          className={`flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+          className={`relative flex flex-col items-center gap-0.5 px-2 py-1 text-[10px] font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
             currentScreen === 'map' ? 'text-blue-600' : 'text-slate-500'
           }`}
         >
-          <Compass className="h-4 w-4" />
+          <span className="relative inline-flex items-center">
+            <Compass className="h-4 w-4" />
+            {childProfile && primeiroAnoUnlocked && (
+              <Star className="h-3 w-3 -ml-1 -mt-2 fill-amber-400 text-amber-500" />
+            )}
+          </span>
           <span>Trilha</span>
         </button>
         <button
