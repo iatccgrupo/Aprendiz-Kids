@@ -13,6 +13,7 @@ import {
   Loader2,
   Send,
   MessageCircleHeart,
+  Square,
 } from 'lucide-react';
 import { ChildProfile, Phase, ScreenState } from '@/lib/types';
 import { stopSpeaking, playPopSound, GeminiFemaleVoice } from '@/lib/sound';
@@ -34,6 +35,71 @@ interface TranscriptMessage {
 }
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
+type TransportMode = 'ws' | 'http';
+
+interface LiveTurnApiResponse {
+  audioBase64: string;
+  mimeType: string;
+  inputTranscript?: string;
+  outputTranscript?: string;
+  voiceName?: GeminiFemaleVoice;
+  error?: string;
+}
+
+function getAudioContextConstructor(): typeof AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  return (
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext ||
+    null
+  );
+}
+
+function createSafeAudioContext(preferredSampleRate: number): AudioContext {
+  const AudioCtx = getAudioContextConstructor();
+  if (!AudioCtx) {
+    throw new Error('Navegador sem suporte a áudio Web.');
+  }
+  try {
+    return new AudioCtx({ sampleRate: preferredSampleRate });
+  } catch {
+    return new AudioCtx();
+  }
+}
+
+function downsampleFloat32(
+  input: Float32Array,
+  sourceRate: number,
+  targetRate: number = 16000
+): Float32Array {
+  if (!sourceRate || sourceRate <= 0 || sourceRate === targetRate) {
+    return input;
+  }
+  const ratio = sourceRate / targetRate;
+  const newLength = Math.max(1, Math.round(input.length / ratio));
+  const result = new Float32Array(newLength);
+
+  for (let i = 0; i < newLength; i++) {
+    const srcIndex = i * ratio;
+    const low = Math.floor(srcIndex);
+    const high = Math.min(input.length - 1, low + 1);
+    const frac = srcIndex - low;
+    result[i] = input[low] * (1 - frac) + input[high] * frac;
+  }
+
+  return result;
+}
+
+function concatFloat32Chunks(chunks: Float32Array[]): Float32Array {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
 
 function pcmFloat32ToBase64(input: Float32Array): string {
   const int16 = new Int16Array(input.length);
@@ -51,20 +117,24 @@ function pcmFloat32ToBase64(input: Float32Array): string {
   return window.btoa(binary);
 }
 
-function base64Pcm24kToAudioBuffer(
-  ctx: AudioContext,
-  base64Data: string,
-  sampleRate: number = 24000
-): AudioBuffer {
+function base64ToUint8Array(base64Data: string): Uint8Array {
   const binaryString = window.atob(base64Data);
   const byteLength = binaryString.length;
   const bytes = new Uint8Array(byteLength);
   for (let i = 0; i < byteLength; i++) {
     bytes[i] = binaryString.charCodeAt(i);
   }
+  return bytes;
+}
 
+function base64PcmToAudioBuffer(
+  ctx: AudioContext,
+  base64Data: string,
+  sampleRate: number = 24000
+): AudioBuffer {
+  const bytes = base64ToUint8Array(base64Data);
   const sampleCount = Math.floor(bytes.byteLength / 2);
-  const view = new DataView(bytes.buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const float32 = new Float32Array(sampleCount);
 
   for (let i = 0; i < sampleCount; i++) {
@@ -72,9 +142,18 @@ function base64Pcm24kToAudioBuffer(
     float32[i] = sample / 32768;
   }
 
-  const audioBuffer = ctx.createBuffer(1, sampleCount, sampleRate);
-  audioBuffer.getChannelData(0).set(float32);
-  return audioBuffer;
+  try {
+    const audioBuffer = ctx.createBuffer(1, sampleCount, sampleRate);
+    audioBuffer.getChannelData(0).set(float32);
+    return audioBuffer;
+  } catch {
+    // Fallback caso o dispositivo mobile exija o sampleRate nativo do AudioContext
+    const targetRate = ctx.sampleRate || 44100;
+    const resampled = downsampleFloat32(float32, sampleRate, targetRate);
+    const audioBuffer = ctx.createBuffer(1, resampled.length, targetRate);
+    audioBuffer.getChannelData(0).set(resampled);
+    return audioBuffer;
+  }
 }
 
 function parseSampleRateFromMime(mimeType?: string): number {
@@ -119,28 +198,58 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
   soundEnabled,
 }) => {
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
+  const connectionStateRef = useRef<ConnectionState>('idle');
+  const updateConnectionState = useCallback((next: ConnectionState) => {
+    connectionStateRef.current = next;
+    setConnectionState(next);
+  }, []);
+  const [transportMode, setTransportMode] = useState<TransportMode>('ws');
   const [isMicMuted, setIsMicMuted] = useState<boolean>(false);
   const [isTeacherSpeaking, setIsTeacherSpeaking] = useState<boolean>(false);
-  const [activeVoice, setActiveVoice] = useState<GeminiFemaleVoice>('Kore');
+  const [isHttpRecording, setIsHttpRecording] = useState<boolean>(false);
+  const [isHttpSending, setIsHttpSending] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [textInput, setTextInput] = useState<string>('');
   const [transcripts, setTranscripts] = useState<TranscriptMessage[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const wsReadyRef = useRef<boolean>(false);
+  const wsWatchdogRef = useRef<number | null>(null);
+  const transportModeRef = useRef<TransportMode>('ws');
+
   const inputAudioCtxRef = useRef<AudioContext | null>(null);
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const zeroGainRef = useRef<GainNode | null>(null);
+
   const nextStartTimeRef = useRef<number>(0);
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const httpAudioElRef = useRef<HTMLAudioElement | null>(null);
+  const httpAudioUrlRef = useRef<string | null>(null);
+
   const isMicMutedRef = useRef<boolean>(false);
+  const isHttpRecordingRef = useRef<boolean>(false);
+  const httpRecordedChunksRef = useRef<Float32Array[]>([]);
+  const transcriptsRef = useRef<TranscriptMessage[]>([]);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const sessionSeqRef = useRef<number>(0);
 
   useEffect(() => {
     isMicMutedRef.current = isMicMuted;
   }, [isMicMuted]);
+
+  useEffect(() => {
+    transcriptsRef.current = transcripts;
+  }, [transcripts]);
+
+  const clearWsWatchdog = useCallback(() => {
+    if (wsWatchdogRef.current !== null) {
+      window.clearTimeout(wsWatchdogRef.current);
+      wsWatchdogRef.current = null;
+    }
+  }, []);
 
   const stopQueuedPlayback = useCallback(() => {
     activeSourcesRef.current.forEach((src) => {
@@ -151,11 +260,29 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
     });
     activeSourcesRef.current.clear();
     nextStartTimeRef.current = 0;
+
+    if (httpAudioElRef.current) {
+      try {
+        httpAudioElRef.current.pause();
+        httpAudioElRef.current.src = '';
+      } catch {}
+      httpAudioElRef.current = null;
+    }
+
+    if (httpAudioUrlRef.current) {
+      try {
+        URL.revokeObjectURL(httpAudioUrlRef.current);
+      } catch {}
+      httpAudioUrlRef.current = null;
+    }
+
     setIsTeacherSpeaking(false);
   }, []);
 
-  const disconnectLiveSession = useCallback(() => {
-    stopQueuedPlayback();
+  const cleanupMicResources = useCallback(() => {
+    isHttpRecordingRef.current = false;
+    httpRecordedChunksRef.current = [];
+    setIsHttpRecording(false);
 
     if (processorRef.current) {
       try {
@@ -194,6 +321,14 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
       } catch {}
       inputAudioCtxRef.current = null;
     }
+  }, []);
+
+  const disconnectLiveSession = useCallback(() => {
+    sessionSeqRef.current += 1;
+    clearWsWatchdog();
+    wsReadyRef.current = false;
+    stopQueuedPlayback();
+    cleanupMicResources();
 
     if (outputAudioCtxRef.current) {
       try {
@@ -203,58 +338,78 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
     }
 
     if (wsRef.current) {
-      try {
-        wsRef.current.close();
-      } catch {}
+      const socket = wsRef.current;
       wsRef.current = null;
+      try {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        socket.close();
+      } catch {}
     }
 
-    setConnectionState('idle');
+    updateConnectionState('idle');
     setIsTeacherSpeaking(false);
-  }, [stopQueuedPlayback]);
+    setIsHttpSending(false);
+  }, [cleanupMicResources, clearWsWatchdog, stopQueuedPlayback, updateConnectionState]);
 
-  const appendTranscript = useCallback((role: 'child' | 'teacher', delta: string) => {
-    const clean = delta.trim();
-    if (!clean) return;
+  const appendTranscript = useCallback(
+    (role: 'child' | 'teacher', delta: string, replaceLastChunked: boolean = true) => {
+      const clean = delta.trim();
+      if (!clean) return;
 
-    setTranscripts((prev) => {
-      const last = prev[prev.length - 1];
-      if (last && last.role === role) {
-        const separator =
-          last.text.endsWith(' ') || clean.startsWith(' ') || /^[.,!?]/.test(clean)
-            ? ''
-            : ' ';
-        const updated = {
-          ...last,
-          text: `${last.text}${separator}${clean}`.trim(),
-        };
-        return [...prev.slice(0, -1), updated];
-      }
+      setTranscripts((prev) => {
+        const last = prev[prev.length - 1];
+        if (replaceLastChunked && last && last.role === role) {
+          const separator =
+            last.text.endsWith(' ') || clean.startsWith(' ') || /^[.,!?]/.test(clean)
+              ? ''
+              : ' ';
+          const updated = {
+            ...last,
+            text: `${last.text}${separator}${clean}`.trim(),
+          };
+          const next = [...prev.slice(0, -1), updated];
+          transcriptsRef.current = next;
+          return next;
+        }
 
-      return [
-        ...prev.slice(-11),
-        {
-          id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          role,
-          text: clean,
-        },
-      ];
-    });
-  }, []);
+        const next = [
+          ...prev.slice(-11),
+          {
+            id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            role,
+            text: clean,
+          },
+        ];
+        transcriptsRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
 
   const scheduleOutputAudioChunk = useCallback(
     (base64Pcm: string, mimeType?: string) => {
       if (!soundEnabled) return;
 
-      const outputCtx = outputAudioCtxRef.current;
-      if (!outputCtx) return;
+      let outputCtx = outputAudioCtxRef.current;
+      if (!outputCtx) {
+        try {
+          outputCtx = createSafeAudioContext(24000);
+          outputAudioCtxRef.current = outputCtx;
+        } catch {
+          return;
+        }
+      }
 
       if (outputCtx.state === 'suspended') {
         void outputCtx.resume();
       }
 
       const sampleRate = parseSampleRateFromMime(mimeType);
-      const buffer = base64Pcm24kToAudioBuffer(outputCtx, base64Pcm, sampleRate);
+      const buffer = base64PcmToAudioBuffer(outputCtx, base64Pcm, sampleRate);
       const source = outputCtx.createBufferSource();
       source.buffer = buffer;
       source.connect(outputCtx.destination);
@@ -277,45 +432,308 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
     [soundEnabled]
   );
 
+  const playWavBase64 = useCallback(
+    async (base64Wav: string, mimeType: string = 'audio/wav') => {
+      if (!soundEnabled || !base64Wav) return;
+      stopQueuedPlayback();
+
+      const bytes = base64ToUint8Array(base64Wav);
+      const blobBytes = new Uint8Array(bytes.byteLength);
+      blobBytes.set(bytes);
+      const blob = new Blob([blobBytes], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      httpAudioUrlRef.current = url;
+
+      const audioEl = new Audio(url);
+      httpAudioElRef.current = audioEl;
+      setIsTeacherSpeaking(true);
+
+      audioEl.onended = () => {
+        if (httpAudioUrlRef.current === url) {
+          URL.revokeObjectURL(url);
+          httpAudioUrlRef.current = null;
+        }
+        if (httpAudioElRef.current === audioEl) {
+          httpAudioElRef.current = null;
+        }
+        setIsTeacherSpeaking(false);
+      };
+
+      audioEl.onerror = () => {
+        if (httpAudioUrlRef.current === url) {
+          URL.revokeObjectURL(url);
+          httpAudioUrlRef.current = null;
+        }
+        if (httpAudioElRef.current === audioEl) {
+          httpAudioElRef.current = null;
+        }
+        setIsTeacherSpeaking(false);
+      };
+
+      try {
+        await audioEl.play();
+      } catch {
+        // Fallback para Web Audio API caso o elemento Audio seja bloqueado no iOS Safari
+        try {
+          let outputCtx = outputAudioCtxRef.current;
+          if (!outputCtx) {
+            outputCtx = createSafeAudioContext(24000);
+            outputAudioCtxRef.current = outputCtx;
+          }
+          if (outputCtx.state === 'suspended') {
+            await outputCtx.resume();
+          }
+          const arrayBuffer = await blob.arrayBuffer();
+          const decoded = await outputCtx.decodeAudioData(arrayBuffer.slice(0));
+          const source = outputCtx.createBufferSource();
+          source.buffer = decoded;
+          source.connect(outputCtx.destination);
+          activeSourcesRef.current.add(source);
+          source.onended = () => {
+            activeSourcesRef.current.delete(source);
+            if (activeSourcesRef.current.size === 0) {
+              setIsTeacherSpeaking(false);
+            }
+          };
+          source.start(0);
+        } catch {
+          setIsTeacherSpeaking(false);
+        }
+      }
+    },
+    [soundEnabled, stopQueuedPlayback]
+  );
+
+  const setupMicrophonePipeline = useCallback(
+    async (mode: TransportMode): Promise<boolean> => {
+      if (
+        typeof navigator === 'undefined' ||
+        !navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia
+      ) {
+        return false;
+      }
+
+      if (mediaStreamRef.current && processorRef.current && inputAudioCtxRef.current) {
+        if (inputAudioCtxRef.current.state === 'suspended') {
+          try {
+            await inputAudioCtxRef.current.resume();
+          } catch {}
+        }
+        return true;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        mediaStreamRef.current = stream;
+
+        const inputCtx = createSafeAudioContext(16000);
+        inputAudioCtxRef.current = inputCtx;
+        if (inputCtx.state === 'suspended') {
+          await inputCtx.resume().catch(() => {});
+        }
+
+        const source = inputCtx.createMediaStreamSource(stream);
+        const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+        const zeroGain = inputCtx.createGain();
+        zeroGain.gain.value = 0;
+
+        sourceNodeRef.current = source;
+        processorRef.current = processor;
+        zeroGainRef.current = zeroGain;
+
+        processor.onaudioprocess = (event) => {
+          const channelData = event.inputBuffer.getChannelData(0);
+          const downsampled = downsampleFloat32(channelData, inputCtx.sampleRate, 16000);
+
+          if (transportModeRef.current === 'ws') {
+            if (isMicMutedRef.current) return;
+            if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+            const base64Pcm = pcmFloat32ToBase64(downsampled);
+            wsRef.current.send(
+              JSON.stringify({
+                type: 'audio',
+                data: base64Pcm,
+              })
+            );
+            return;
+          }
+
+          // Em modo HTTP compatível com mobile, acumula chunks durante gravação ativa
+          if (mode === 'http' || transportModeRef.current === 'http') {
+            if (!isHttpRecordingRef.current) return;
+            // Limite de segurança (~12 segundos em 16kHz)
+            const totalSamples = httpRecordedChunksRef.current.reduce(
+              (sum, arr) => sum + arr.length,
+              0
+            );
+            if (totalSamples < 16000 * 12) {
+              httpRecordedChunksRef.current.push(new Float32Array(downsampled));
+            }
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(zeroGain);
+        zeroGain.connect(inputCtx.destination);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    []
+  );
+
   const childName = childProfile?.name;
 
+  const callHttpLiveTurn = useCallback(
+    async (
+      payload: {
+        action: 'greet' | 'text' | 'audio';
+        text?: string;
+        audioBase64Pcm16k?: string;
+      },
+      seq: number
+    ) => {
+      setIsHttpSending(true);
+      try {
+        const response = await fetch('/api/live-turn', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            ...payload,
+            history: transcriptsRef.current.slice(-6).map((item) => ({
+              role: item.role,
+              text: item.text,
+            })),
+            childName,
+            screenContext: buildScreenContextDescription(currentScreen, currentPhase),
+            voiceName: 'Kore',
+          }),
+        });
+
+        const data = (await response.json()) as LiveTurnApiResponse;
+        if (sessionSeqRef.current !== seq) return;
+
+        if (!response.ok || data.error) {
+          throw new Error(
+            data.error || 'A Professora Bia não pôde responder agora. Tente novamente.'
+          );
+        }
+
+        updateConnectionState('connected');
+        setErrorMessage('');
+
+        if (payload.action === 'audio' && data.inputTranscript) {
+          appendTranscript('child', data.inputTranscript, false);
+        }
+        if (data.outputTranscript) {
+          appendTranscript('teacher', data.outputTranscript, false);
+        }
+        if (data.audioBase64) {
+          await playWavBase64(data.audioBase64, data.mimeType || 'audio/wav');
+        }
+      } catch (err: unknown) {
+        if (sessionSeqRef.current !== seq) return;
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Não foi possível conversar com a Professora Bia agora.';
+        setErrorMessage(message);
+        if (connectionStateRef.current !== 'connected') {
+          updateConnectionState('error');
+        }
+      } finally {
+        if (sessionSeqRef.current === seq) {
+          setIsHttpSending(false);
+        }
+      }
+    },
+    [
+      appendTranscript,
+      childName,
+      currentPhase,
+      currentScreen,
+      playWavBase64,
+      updateConnectionState,
+    ]
+  );
+
+  const switchToHttpLiveMode = useCallback(
+    async (seq: number, sendInitialGreet: boolean = true) => {
+      if (sessionSeqRef.current !== seq) return;
+      clearWsWatchdog();
+      wsReadyRef.current = false;
+
+      if (wsRef.current) {
+        const socket = wsRef.current;
+        wsRef.current = null;
+        try {
+          socket.onopen = null;
+          socket.onmessage = null;
+          socket.onerror = null;
+          socket.onclose = null;
+          socket.close();
+        } catch {}
+      }
+
+      transportModeRef.current = 'http';
+      setTransportMode('http');
+      setErrorMessage('');
+      updateConnectionState('connected');
+
+      if (sendInitialGreet) {
+        await callHttpLiveTurn({ action: 'greet' }, seq);
+      }
+    },
+    [callHttpLiveTurn, clearWsWatchdog, updateConnectionState]
+  );
+
   const startLiveSession = useCallback(
-    async (preferredVoice: GeminiFemaleVoice = activeVoice) => {
+    async (preferredVoice: GeminiFemaleVoice = 'Kore') => {
       stopSpeaking();
       disconnectLiveSession();
 
+      const seq = sessionSeqRef.current;
+      transportModeRef.current = 'ws';
+      wsReadyRef.current = false;
+
+      setTransportMode('ws');
       setErrorMessage('');
       setTranscripts([]);
-      setConnectionState('connecting');
+      transcriptsRef.current = [];
+      updateConnectionState('connecting');
       setIsMicMuted(false);
       isMicMutedRef.current = false;
 
       try {
-        const OutputAudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        const outputCtx = new OutputAudioCtx({ sampleRate: 24000 });
-        outputAudioCtxRef.current = outputCtx;
-
-        // Solicita microfone para conversação em tempo real (16kHz PCM)
-        let micAvailable = true;
-        let stream: MediaStream | null = null;
+        // Desbloqueia saída de áudio dentro do gesto de toque (crítico no iOS/Android)
         try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-          });
-          mediaStreamRef.current = stream;
+          const outputCtx = createSafeAudioContext(24000);
+          outputAudioCtxRef.current = outputCtx;
+          if (outputCtx.state === 'suspended') {
+            void outputCtx.resume();
+          }
         } catch {
-          micAvailable = false;
+          // Segue mesmo se AudioContext falhar, pois o fallback WAV usa <audio>
+        }
+
+        // Solicita microfone sem travar a conversa caso seja negado ou bloqueado no dispositivo
+        const micOk = await setupMicrophonePipeline('ws');
+        if (sessionSeqRef.current !== seq) return;
+
+        if (!micOk) {
           setIsMicMuted(true);
           isMicMutedRef.current = true;
-          setErrorMessage(
-            'Não foi possível acessar o microfone. Você ainda pode ouvir e conversar enviando mensagens abaixo!'
-          );
         }
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -328,50 +746,31 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
           query.set('childName', childName);
         }
 
-        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/live?${query.toString()}`);
+        let ws: WebSocket;
+        try {
+          ws = new WebSocket(`${protocol}//${window.location.host}/ws/live?${query.toString()}`);
+        } catch {
+          await switchToHttpLiveMode(seq, true);
+          return;
+        }
+
         wsRef.current = ws;
 
-        ws.onopen = () => {
-          if (wsRef.current !== ws) return;
-
-          if (micAvailable && stream) {
-            const InputAudioCtx =
-              window.AudioContext ||
-              (window as unknown as { webkitAudioContext: typeof AudioContext })
-                .webkitAudioContext;
-            const inputCtx = new InputAudioCtx({ sampleRate: 16000 });
-            inputAudioCtxRef.current = inputCtx;
-
-            const source = inputCtx.createMediaStreamSource(stream);
-            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
-            const zeroGain = inputCtx.createGain();
-            zeroGain.gain.value = 0;
-
-            sourceNodeRef.current = source;
-            processorRef.current = processor;
-            zeroGainRef.current = zeroGain;
-
-            processor.onaudioprocess = (event) => {
-              if (isMicMutedRef.current) return;
-              if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-              const channelData = event.inputBuffer.getChannelData(0);
-              const base64Pcm = pcmFloat32ToBase64(channelData);
-              wsRef.current.send(
-                JSON.stringify({
-                  type: 'audio',
-                  data: base64Pcm,
-                })
-              );
-            };
-
-            source.connect(processor);
-            processor.connect(zeroGain);
-            zeroGain.connect(inputCtx.destination);
+        // Watchdog de 3.8s: se proxy/mobile bloquear WebSocket, muda automaticamente para HTTP Live sem erro!
+        wsWatchdogRef.current = window.setTimeout(() => {
+          if (sessionSeqRef.current !== seq) return;
+          if (!wsReadyRef.current) {
+            void switchToHttpLiveMode(seq, true);
           }
+        }, 3800);
+
+        ws.onopen = () => {
+          if (wsRef.current !== ws || sessionSeqRef.current !== seq) return;
+          // Aguarda evento 'ready' do servidor antes de desarmar watchdog
         };
 
         ws.onmessage = (event) => {
+          if (wsRef.current !== ws || sessionSeqRef.current !== seq) return;
           try {
             const payload = JSON.parse(event.data as string) as {
               type?: string;
@@ -380,30 +779,33 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
               text?: string;
               voiceName?: GeminiFemaleVoice;
               message?: string;
-              reason?: string;
             };
 
             if (payload.type === 'ready') {
-              setConnectionState('connected');
-              if (payload.voiceName) {
-                setActiveVoice(payload.voiceName);
-              }
+              wsReadyRef.current = true;
+              clearWsWatchdog();
+              transportModeRef.current = 'ws';
+              setTransportMode('ws');
+              updateConnectionState('connected');
+              setErrorMessage('');
               return;
             }
 
             if (payload.type === 'audio' && payload.data) {
-              setConnectionState('connected');
+              wsReadyRef.current = true;
+              clearWsWatchdog();
+              updateConnectionState('connected');
               scheduleOutputAudioChunk(payload.data, payload.mimeType);
               return;
             }
 
             if (payload.type === 'inputTranscript' && payload.text) {
-              appendTranscript('child', payload.text);
+              appendTranscript('child', payload.text, true);
               return;
             }
 
             if (payload.type === 'outputTranscript' && payload.text) {
-              appendTranscript('teacher', payload.text);
+              appendTranscript('teacher', payload.text, true);
               return;
             }
 
@@ -413,10 +815,13 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
             }
 
             if (payload.type === 'error') {
-              setErrorMessage(
-                payload.message || 'Erro na conexão de voz em tempo real com a Professora Bia.'
-              );
-              setConnectionState('error');
+              if (!wsReadyRef.current) {
+                void switchToHttpLiveMode(seq, true);
+              } else {
+                setErrorMessage(
+                  payload.message || 'Erro na conexão de voz com a Professora Bia.'
+                );
+              }
               return;
             }
 
@@ -429,41 +834,45 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
         };
 
         ws.onerror = () => {
-          setErrorMessage(
-            'Não foi possível conectar à conversa ao vivo. Verifique a conexão e tente novamente.'
-          );
-          setConnectionState('error');
+          if (wsRef.current !== ws || sessionSeqRef.current !== seq) return;
+          if (!wsReadyRef.current) {
+            // Em mobile/proxies onde WSS falha, alterna silenciosamente para HTTP Live (Kore)
+            void switchToHttpLiveMode(seq, true);
+          } else {
+            void switchToHttpLiveMode(seq, false);
+          }
         };
 
         ws.onclose = () => {
-          if (wsRef.current === ws) {
+          if (wsRef.current !== ws || sessionSeqRef.current !== seq) return;
+          if (!wsReadyRef.current) {
+            void switchToHttpLiveMode(seq, true);
+          } else {
             setIsTeacherSpeaking(false);
           }
         };
-      } catch (err: unknown) {
-        const msg =
-          err instanceof Error
-            ? err.message
-            : 'Erro ao iniciar o microfone ou a conversa por voz.';
-        setErrorMessage(msg);
-        setConnectionState('error');
+      } catch {
+        await switchToHttpLiveMode(seq, true);
       }
     },
     [
-      activeVoice,
       appendTranscript,
       childName,
+      clearWsWatchdog,
       currentPhase,
       currentScreen,
       disconnectLiveSession,
       scheduleOutputAudioChunk,
+      setupMicrophonePipeline,
       stopQueuedPlayback,
+      switchToHttpLiveMode,
+      updateConnectionState,
     ]
   );
 
-  // Atualiza contexto da tela silenciosamente se sessão ao vivo já estiver conectada
+  // Atualiza contexto da tela silenciosamente se sessão WS já estiver conectada
   useEffect(() => {
-    if (connectionState !== 'connected') return;
+    if (connectionState !== 'connected' || transportMode !== 'ws') return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
     wsRef.current.send(
@@ -472,14 +881,14 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
         screenContext: buildScreenContextDescription(currentScreen, currentPhase),
       })
     );
-  }, [connectionState, currentScreen, currentPhase]);
+  }, [connectionState, transportMode, currentScreen, currentPhase]);
 
   // Rola transcrições para o final automaticamente
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcripts]);
 
-  // Limpa sessão ao fechar modal ou desmontar componente
+  // Limpa sessão ao desmontar componente
   useEffect(() => {
     return () => {
       disconnectLiveSession();
@@ -496,15 +905,76 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
     const clean = promptText.trim();
     if (!clean) return;
     playPopSound();
+    setTextInput('');
 
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      void startLiveSession();
+    if (
+      transportModeRef.current === 'ws' &&
+      wsRef.current &&
+      wsRef.current.readyState === WebSocket.OPEN
+    ) {
+      appendTranscript('child', clean, false);
+      wsRef.current.send(JSON.stringify({ type: 'text', text: clean }));
       return;
     }
 
-    appendTranscript('child', clean);
-    wsRef.current.send(JSON.stringify({ type: 'text', text: clean }));
-    setTextInput('');
+    if (transportModeRef.current === 'http' && connectionState === 'connected') {
+      appendTranscript('child', clean, false);
+      void callHttpLiveTurn({ action: 'text', text: clean }, sessionSeqRef.current);
+      return;
+    }
+
+    // Caso a sessão ainda esteja fechada/ociosa, inicia em modo HTTP Live e envia a pergunta
+    stopSpeaking();
+    disconnectLiveSession();
+    const seq = sessionSeqRef.current;
+    transportModeRef.current = 'http';
+    setTransportMode('http');
+    updateConnectionState('connected');
+    appendTranscript('child', clean, false);
+    void callHttpLiveTurn({ action: 'text', text: clean }, seq);
+  };
+
+  const handleToggleHttpRecording = async () => {
+    playPopSound();
+
+    if (isHttpRecordingRef.current) {
+      isHttpRecordingRef.current = false;
+      setIsHttpRecording(false);
+
+      const chunks = httpRecordedChunksRef.current;
+      httpRecordedChunksRef.current = [];
+      const merged = concatFloat32Chunks(chunks);
+
+      // Mínimo ~0.25s de áudio a 16kHz para evitar envios vazios
+      if (merged.length < 4000) {
+        setErrorMessage('Toque e segure sua fala por pelo menos 1 segundo para eu ouvir você!');
+        return;
+      }
+
+      setErrorMessage('');
+      const base64Pcm = pcmFloat32ToBase64(merged);
+      await callHttpLiveTurn(
+        { action: 'audio', audioBase64Pcm16k: base64Pcm },
+        sessionSeqRef.current
+      );
+      return;
+    }
+
+    // Inicia gravação no modo mobile HTTP
+    stopQueuedPlayback();
+    setErrorMessage('');
+
+    const micReady = await setupMicrophonePipeline('http');
+    if (!micReady) {
+      setErrorMessage(
+        'Não foi possível abrir o microfone neste aparelho. Você pode digitar ou tocar nas sugestões abaixo!'
+      );
+      return;
+    }
+
+    httpRecordedChunksRef.current = [];
+    isHttpRecordingRef.current = true;
+    setIsHttpRecording(true);
   };
 
   const quickPrompts = [
@@ -515,7 +985,7 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
 
   return (
     <>
-      {/* Botão flutuante de acesso rápido à Conversa em Tempo Real */}
+      {/* Botão flutuante de acesso rápido à Conversa em Tempo Real (somente após login) */}
       {!isOpen && (
         <button
           type="button"
@@ -535,7 +1005,7 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
         </button>
       )}
 
-      {/* Painel de Conversação por Voz em Tempo Real (Gemini Live API) */}
+      {/* Painel de Conversação por Voz em Tempo Real (Gemini Live API · Kore) */}
       <AnimatePresence>
         {isOpen && (
           <motion.div
@@ -570,8 +1040,14 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
                   <p className="text-xs font-bold text-rose-50 truncate">
                     {connectionState === 'connecting' && 'Conectando conversa mágica...'}
                     {connectionState === 'connected' &&
-                      (isTeacherSpeaking
+                      (isHttpSending
+                        ? 'Professora Bia está pensando...'
+                        : isTeacherSpeaking
                         ? 'Falando com carinho...'
+                        : transportMode === 'http'
+                        ? isHttpRecording
+                          ? 'Ouvindo você! Toque em Enviar Fala'
+                          : 'Pronta! Toque no botão verde para falar'
                         : isMicMuted
                         ? 'Microfone pausado (toque para falar)'
                         : 'Ouvindo você! Pode falar agora!')}
@@ -605,8 +1081,8 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
             {/* Corpo da Conversa */}
             <div className="p-4 space-y-3 bg-gradient-to-b from-white to-amber-50/40">
               {errorMessage && (
-                <div className="rounded-2xl border-2 border-red-200 bg-red-50 p-3 text-xs font-bold text-red-800 flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                <div className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-900 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
                   <span>{errorMessage}</span>
                 </div>
               )}
@@ -615,7 +1091,7 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
               <div className="h-44 overflow-y-auto rounded-2xl border-2 border-amber-100 bg-white p-3 space-y-2.5 shadow-inner">
                 {transcripts.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center px-3 text-slate-500">
-                    {connectionState === 'connecting' ? (
+                    {connectionState === 'connecting' || isHttpSending ? (
                       <>
                         <Loader2 className="h-7 w-7 text-rose-500 animate-spin mb-2" />
                         <p className="text-xs font-bold">
@@ -660,8 +1136,9 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
                   <button
                     key={prompt}
                     type="button"
+                    disabled={isHttpSending}
                     onClick={() => handleSendTextToLive(prompt)}
-                    className="rounded-full bg-amber-100 hover:bg-amber-200 border border-amber-300 px-3 py-1 text-[11px] font-extrabold text-amber-950 transition-colors cursor-pointer"
+                    className="rounded-full bg-amber-100 hover:bg-amber-200 border border-amber-300 px-3 py-1 text-[11px] font-extrabold text-amber-950 disabled:opacity-50 transition-colors cursor-pointer"
                   >
                     {prompt}
                   </button>
@@ -685,11 +1162,15 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
                 />
                 <button
                   type="submit"
-                  disabled={!textInput.trim()}
+                  disabled={!textInput.trim() || isHttpSending}
                   className="flex h-9 w-9 items-center justify-center rounded-2xl bg-rose-500 text-white shadow-xs hover:bg-rose-600 disabled:opacity-40 transition-colors cursor-pointer"
                   title="Enviar pergunta"
                 >
-                  <Send className="h-4 w-4" />
+                  {isHttpSending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
                 </button>
               </form>
 
@@ -697,30 +1178,60 @@ export const LiveVoiceAssistant: React.FC<LiveVoiceAssistantProps> = ({
               <div className="flex items-center justify-between gap-2 pt-1">
                 {connectionState === 'connected' || connectionState === 'connecting' ? (
                   <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        playPopSound();
-                        setIsMicMuted((prev) => !prev);
-                      }}
-                      className={`flex-1 flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-xs font-black transition-all cursor-pointer ${
-                        isMicMuted
-                          ? 'bg-amber-100 text-amber-900 border-2 border-amber-300'
-                          : 'bg-emerald-500 text-white shadow-[0_4px_0_#047857] hover:brightness-105 active:translate-y-0.5'
-                      }`}
-                    >
-                      {isMicMuted ? (
-                        <>
-                          <MicOff className="h-4 w-4" />
-                          <span>Ativar Microfone</span>
-                        </>
-                      ) : (
-                        <>
-                          <Mic className="h-4 w-4 animate-pulse" />
-                          <span>Microfone Aberto</span>
-                        </>
-                      )}
-                    </button>
+                    {transportMode === 'ws' ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playPopSound();
+                          setIsMicMuted((prev) => !prev);
+                        }}
+                        className={`flex-1 flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-xs font-black transition-all cursor-pointer ${
+                          isMicMuted
+                            ? 'bg-amber-100 text-amber-900 border-2 border-amber-300'
+                            : 'bg-emerald-500 text-white shadow-[0_4px_0_#047857] hover:brightness-105 active:translate-y-0.5'
+                        }`}
+                      >
+                        {isMicMuted ? (
+                          <>
+                            <MicOff className="h-4 w-4" />
+                            <span>Ativar Microfone</span>
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="h-4 w-4 animate-pulse" />
+                            <span>Microfone Aberto</span>
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={isHttpSending}
+                        onClick={() => void handleToggleHttpRecording()}
+                        className={`flex-1 flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-xs font-black transition-all cursor-pointer disabled:opacity-60 ${
+                          isHttpRecording
+                            ? 'bg-rose-500 text-white shadow-[0_4px_0_#be123c] animate-pulse'
+                            : 'bg-emerald-500 text-white shadow-[0_4px_0_#047857] hover:brightness-105 active:translate-y-0.5'
+                        }`}
+                      >
+                        {isHttpSending ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span>Enviando fala...</span>
+                          </>
+                        ) : isHttpRecording ? (
+                          <>
+                            <Square className="h-4 w-4 fill-white" />
+                            <span>Enviar Minha Fala</span>
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="h-4 w-4" />
+                            <span>Tocar para Falar</span>
+                          </>
+                        )}
+                      </button>
+                    )}
 
                     <button
                       type="button"

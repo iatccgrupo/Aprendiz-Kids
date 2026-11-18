@@ -487,3 +487,268 @@ export async function connectInteractiveLiveSession(params: {
     ? lastErr
     : new Error('Não foi possível conectar à Gemini Live API.');
 }
+
+export interface LiveTurnHistoryItem {
+  role: 'child' | 'teacher';
+  text: string;
+}
+
+export interface LiveTurnResult {
+  audioBase64: string;
+  mimeType: string;
+  inputTranscript: string;
+  outputTranscript: string;
+  voiceName: LiveFemaleVoice;
+}
+
+async function runSingleLiveConversationTurn(params: {
+  apiKey: string;
+  action: 'greet' | 'text' | 'audio';
+  text?: string;
+  audioBase64Pcm16k?: string;
+  history?: LiveTurnHistoryItem[];
+  childName?: string;
+  screenContext?: string;
+  voiceName: LiveFemaleVoice;
+}): Promise<LiveTurnResult> {
+  const ai = createGeminiServerClient(params.apiKey);
+  const voiceName = params.voiceName;
+  const systemInstruction = buildTeacherSystemInstruction({
+    mode: 'conversation',
+    childName: params.childName,
+    screenContext: params.screenContext,
+  });
+
+  return new Promise<LiveTurnResult>((resolve, reject) => {
+    const pcmChunks: Buffer[] = [];
+    let detectedMimeType = 'audio/pcm;rate=24000';
+    let inputTranscript = '';
+    let outputTranscript = '';
+    let sessionRef: Session | null = null;
+    let settled = false;
+
+    const finish = (err?: Error | null, result?: LiveTurnResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      try {
+        sessionRef?.close();
+      } catch {}
+      sessionRef = null;
+      if (err) {
+        reject(err);
+      } else if (result) {
+        resolve(result);
+      }
+    };
+
+    const timeoutId = setTimeout(() => {
+      if (pcmChunks.length > 0) {
+        const wav = buildWavBufferFromPcm(
+          Buffer.concat(pcmChunks),
+          parseSampleRate(detectedMimeType),
+          1,
+          16
+        );
+        finish(null, {
+          audioBase64: wav.toString('base64'),
+          mimeType: 'audio/wav',
+          inputTranscript: inputTranscript.trim(),
+          outputTranscript: outputTranscript.trim(),
+          voiceName,
+        });
+      } else {
+        finish(new Error('Tempo limite excedido na resposta da Professora Bia.'));
+      }
+    }, 15000);
+
+    ai.live
+      .connect({
+        model: GEMINI_LIVE_MODEL,
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName,
+              },
+            },
+          },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          systemInstruction,
+        },
+        callbacks: {
+          onmessage: (message: LiveServerMessage) => {
+            const content = message.serverContent;
+            if (!content) return;
+
+            if (content.inputTranscription?.text) {
+              inputTranscript += `${inputTranscript ? ' ' : ''}${content.inputTranscription.text.trim()}`;
+            }
+
+            if (content.outputTranscription?.text) {
+              outputTranscript += `${outputTranscript ? ' ' : ''}${content.outputTranscription.text.trim()}`;
+            }
+
+            for (const part of content.modelTurn?.parts ?? []) {
+              if (part.inlineData?.data) {
+                if (part.inlineData.mimeType) {
+                  detectedMimeType = part.inlineData.mimeType;
+                }
+                pcmChunks.push(Buffer.from(part.inlineData.data, 'base64'));
+              }
+            }
+
+            if (content.generationComplete || content.turnComplete) {
+              if (pcmChunks.length > 0) {
+                const wav = buildWavBufferFromPcm(
+                  Buffer.concat(pcmChunks),
+                  parseSampleRate(detectedMimeType),
+                  1,
+                  16
+                );
+                finish(null, {
+                  audioBase64: wav.toString('base64'),
+                  mimeType: 'audio/wav',
+                  inputTranscript: inputTranscript.trim(),
+                  outputTranscript: outputTranscript.trim(),
+                  voiceName,
+                });
+              } else if (content.turnComplete) {
+                finish(new Error('A Professora Bia não retornou áudio neste turno.'));
+              }
+            }
+          },
+          onerror: (event: ErrorEvent) => {
+            finish(new Error(event?.message || 'Erro de conexão com a Gemini Live API.'));
+          },
+          onclose: (event: CloseEvent) => {
+            if (!settled) {
+              if (pcmChunks.length > 0) {
+                const wav = buildWavBufferFromPcm(
+                  Buffer.concat(pcmChunks),
+                  parseSampleRate(detectedMimeType),
+                  1,
+                  16
+                );
+                finish(null, {
+                  audioBase64: wav.toString('base64'),
+                  mimeType: 'audio/wav',
+                  inputTranscript: inputTranscript.trim(),
+                  outputTranscript: outputTranscript.trim(),
+                  voiceName,
+                });
+              } else {
+                finish(
+                  new Error(event?.reason || 'Sessão encerrada antes da resposta da Professora.')
+                );
+              }
+            }
+          },
+        },
+      })
+      .then((session) => {
+        if (settled) {
+          try {
+            session.close();
+          } catch {}
+          return;
+        }
+        sessionRef = session;
+
+        // Reenvia histórico recente para manter continuidade da conversa
+        const historyTurns = (params.history || [])
+          .slice(-6)
+          .filter((item) => item.text.trim().length > 0)
+          .map((item) => ({
+            role: item.role === 'child' ? ('user' as const) : ('model' as const),
+            parts: [{ text: item.text.trim() }],
+          }));
+
+        if (params.action === 'audio' && params.audioBase64Pcm16k) {
+          if (historyTurns.length > 0) {
+            session.sendClientContent({
+              turns: historyTurns,
+              turnComplete: false,
+            });
+          }
+
+          const pcmBytes = Buffer.from(params.audioBase64Pcm16k, 'base64');
+          const chunkSize = 8192;
+          for (let offset = 0; offset < pcmBytes.length; offset += chunkSize) {
+            const slice = pcmBytes.subarray(offset, offset + chunkSize);
+            session.sendRealtimeInput({
+              audio: {
+                data: slice.toString('base64'),
+                mimeType: 'audio/pcm;rate=16000',
+              },
+            });
+          }
+          session.sendRealtimeInput({ audioStreamEnd: true });
+          return;
+        }
+
+        const userPrompt =
+          params.action === 'greet'
+            ? params.childName
+              ? `Cumprimente ${params.childName} com muita alegria e entusiasmo em português do Brasil e pergunte no que vocês vão brincar e aprender agora!`
+              : 'Cumprimente a criança com muita alegria e entusiasmo em português do Brasil e convide-a para aprender brincando com você!'
+            : params.text?.trim() || 'Olá, Professora!';
+
+        session.sendClientContent({
+          turns: [
+            ...historyTurns,
+            {
+              role: 'user',
+              parts: [{ text: userPrompt }],
+            },
+          ],
+          turnComplete: true,
+        });
+      })
+      .catch((err: unknown) => {
+        finish(
+          err instanceof Error
+            ? err
+            : new Error('Falha ao conectar à Gemini Live API.')
+        );
+      });
+  });
+}
+
+export async function runLiveConversationTurn(params: {
+  apiKey: string;
+  action: 'greet' | 'text' | 'audio';
+  text?: string;
+  audioBase64Pcm16k?: string;
+  history?: LiveTurnHistoryItem[];
+  childName?: string;
+  screenContext?: string;
+  voiceName?: LiveFemaleVoice;
+}): Promise<LiveTurnResult> {
+  const preferredVoice = resolveLiveFemaleVoice(params.voiceName);
+  const attempts: LiveFemaleVoice[] =
+    preferredVoice === 'Kore'
+      ? ['Kore', 'Kore', 'Aoede']
+      : ['Aoede', 'Aoede', 'Kore'];
+
+  let lastError: unknown = null;
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      return await runSingleLiveConversationTurn({
+        ...params,
+        voiceName: attempts[i],
+      });
+    } catch (err) {
+      lastError = err;
+      if (i < attempts.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * (i + 1)));
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Não foi possível conversar com a Professora Bia agora.');
+}

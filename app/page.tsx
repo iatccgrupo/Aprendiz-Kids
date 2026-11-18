@@ -25,7 +25,7 @@ import {
   getQuestionByPhaseId,
   reconcileLevelsWithCanonical,
 } from '@/lib/game-data';
-import { playPopSound, playSuccessSound } from '@/lib/sound';
+import { playPopSound, playSuccessSound, stopSpeaking } from '@/lib/sound';
 import {
   savePhaseProgressToSupabase,
   saveMedalToSupabase,
@@ -128,6 +128,8 @@ export default function HomePage() {
   const activeMedals = hasMounted ? medals : INITIAL_MEDALS;
   const activeCompletedBookIds = hasMounted ? completedBookIds : [];
   const activeCustomBooks = hasMounted ? customBooks : [];
+  const isAuthenticatedForLiveVoice =
+    Boolean(activeChildProfile) && currentScreen !== 'auth';
 
   // Calculate total stars (trail phases + completed storybooks)
   const phaseStars = activeLevels.reduce((acc, lvl) => {
@@ -484,6 +486,8 @@ export default function HomePage() {
       localStorage.removeItem('aventura_medals');
       localStorage.removeItem('aventura_completed_books');
     } catch {}
+    setIsLiveVoiceOpen(false);
+    stopSpeaking();
     setCurrentScreen('auth');
     playPopSound();
   };
@@ -520,10 +524,14 @@ export default function HomePage() {
           playPopSound();
           setSoundEnabled(!soundEnabled);
         }}
-        onOpenLiveVoice={() => {
-          playPopSound();
-          setIsLiveVoiceOpen(true);
-        }}
+        onOpenLiveVoice={
+          isAuthenticatedForLiveVoice
+            ? () => {
+                playPopSound();
+                setIsLiveVoiceOpen(true);
+              }
+            : undefined
+        }
         onOpenParentGate={() => setIsParentGateOpen(true)}
         onLogout={handleLogout}
       />
@@ -656,16 +664,18 @@ export default function HomePage() {
         }}
       />
 
-      {/* Conversação por Voz em Tempo Real com a Professora Bia (Gemini Live API) */}
-      <LiveVoiceAssistant
-        isOpen={isLiveVoiceOpen}
-        onOpen={() => setIsLiveVoiceOpen(true)}
-        onClose={() => setIsLiveVoiceOpen(false)}
-        childProfile={activeChildProfile}
-        currentScreen={currentScreen}
-        currentPhase={currentPhase}
-        soundEnabled={soundEnabled}
-      />
+      {/* Conversação por Voz em Tempo Real com a Professora Bia (somente após login) */}
+      {isAuthenticatedForLiveVoice && (
+        <LiveVoiceAssistant
+          isOpen={isLiveVoiceOpen}
+          onOpen={() => setIsLiveVoiceOpen(true)}
+          onClose={() => setIsLiveVoiceOpen(false)}
+          childProfile={activeChildProfile}
+          currentScreen={currentScreen}
+          currentPhase={currentPhase}
+          soundEnabled={soundEnabled}
+        />
+      )}
 
       {/* Playful Child-Safe Footer */}
       <footer className="mt-auto border-t border-blue-100 bg-white/80 py-6 text-center text-xs text-slate-500">
