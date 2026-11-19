@@ -24,10 +24,13 @@ import {
   INITIAL_LEVELS,
   INITIAL_MEDALS,
   applyCycleUnlockToLevels,
+  createBlankMedals,
+  createInitialLevelsForCycle,
   getEducacaoInfantilProgressStats,
   getQuestionByPhaseId,
   isEducacaoInfantilCompleted,
   isPrimeiroAnoAccessible,
+  isPrimeiroAnoAgeGroup,
   reconcileLevelsWithCanonical,
 } from '@/lib/game-data';
 import {
@@ -89,10 +92,15 @@ export default function HomePage() {
       const savedProfile = savedProfileRaw
         ? (JSON.parse(savedProfileRaw) as ChildProfile)
         : null;
+      const startedDirectlyInPrimeiroAno =
+        savedProfile?.cycleOrigin === 'primeiro_ano' ||
+        (isPrimeiroAnoAgeGroup(savedProfile?.ageGroup) &&
+          !(saved && isEducacaoInfantilCompleted(JSON.parse(saved) as LevelInfo[])));
       return saved
         ? reconcileLevelsWithCanonical(
             JSON.parse(saved) as LevelInfo[],
-            Boolean(savedProfile?.primeiroAnoUnlocked)
+            Boolean(savedProfile?.primeiroAnoUnlocked),
+            Boolean(startedDirectlyInPrimeiroAno)
           )
         : INITIAL_LEVELS;
     } catch {
@@ -100,7 +108,18 @@ export default function HomePage() {
     }
   });
 
-  const [currentPhase, setCurrentPhase] = useState<Phase>(INITIAL_LEVELS[0].phases[2]); // Fase 3 (Vogal I - Iguana)
+  const [currentPhase, setCurrentPhase] = useState<Phase>(() => {
+    if (typeof window === 'undefined') return INITIAL_LEVELS[0].phases[2];
+    try {
+      const saved = localStorage.getItem('aventura_levels');
+      if (saved) {
+        const parsed = JSON.parse(saved) as LevelInfo[];
+        const active = parsed.flatMap((l) => l.phases).find((p) => p.status === 'current');
+        if (active) return active;
+      }
+    } catch {}
+    return INITIAL_LEVELS[0].phases[2];
+  });
   const [justUnlockedPrimeiroAno, setJustUnlockedPrimeiroAno] = useState(false);
 
   // Activity & Feedback State (question sempre derivada de currentPhase.id)
@@ -204,9 +223,14 @@ export default function HomePage() {
   ) => {
     let nextLevels = levels;
     if (restoredWorkspace?.levels) {
+      const cleanInfantilBase =
+        (profile.cycleOrigin === 'primeiro_ano' ||
+          isPrimeiroAnoAgeGroup(profile.ageGroup)) &&
+        !isEducacaoInfantilCompleted(restoredWorkspace.levels);
       nextLevels = reconcileLevelsWithCanonical(
         restoredWorkspace.levels,
-        Boolean(profile.primeiroAnoUnlocked)
+        Boolean(profile.primeiroAnoUnlocked),
+        cleanInfantilBase
       );
       setLevels(nextLevels);
       try {
@@ -214,9 +238,20 @@ export default function HomePage() {
       } catch {}
     }
 
+    const activePhase =
+      nextLevels.flatMap((l) => l.phases).find((p) => p.status === 'current') ||
+      nextLevels[0].phases[0];
+    setCurrentPhase(activePhase);
+
+    const edInfantilDone = isEducacaoInfantilCompleted(nextLevels);
     const isUnlocked = isPrimeiroAnoAccessible(nextLevels, profile);
+    const resolvedOrigin =
+      profile.cycleOrigin ||
+      (isUnlocked && !edInfantilDone ? 'primeiro_ano' : 'educacao_infantil');
+
     const syncedProfile: ChildProfile = {
       ...profile,
+      cycleOrigin: resolvedOrigin,
       primeiroAnoUnlocked: isUnlocked,
       cycleStage: isUnlocked ? 'primeiro_ano' : 'educacao_infantil',
       ageGroup: isUnlocked ? '1º Ano Fundamental (6 a 7 anos)' : profile.ageGroup,
@@ -230,7 +265,9 @@ export default function HomePage() {
     let nextMedals = medals;
     if (restoredWorkspace?.medals) {
       const savedMap = new Map(restoredWorkspace.medals.map((m) => [m.id, m]));
-      nextMedals = INITIAL_MEDALS.map((base) => savedMap.get(base.id) || base);
+      const medalBase =
+        resolvedOrigin === 'primeiro_ano' ? createBlankMedals() : INITIAL_MEDALS;
+      nextMedals = medalBase.map((base) => savedMap.get(base.id) || base);
       setMedals(nextMedals);
       try {
         localStorage.setItem('aventura_medals', JSON.stringify(nextMedals));
@@ -432,12 +469,21 @@ export default function HomePage() {
     setCurrentScreen('feedback');
   };
 
-  // Progress to next phase in canonical order
+  // Progress to next unlocked phase in canonical order
   const handleNextQuestion = () => {
     const allPhases = activeLevels.flatMap((lvl) => lvl.phases);
     const currentIdx = allPhases.findIndex((p) => p.id === currentPhase.id);
-    const nextPhase =
-      currentIdx >= 0 ? allPhases[(currentIdx + 1) % allPhases.length] : allPhases[0];
+    const unlockedPhases = allPhases.filter((p) => p.status !== 'locked');
+
+    let nextPhase: Phase | undefined;
+    if (currentIdx >= 0) {
+      nextPhase = allPhases
+        .slice(currentIdx + 1)
+        .find((p) => p.status !== 'locked');
+    }
+    if (!nextPhase) {
+      nextPhase = unlockedPhases[0] || allPhases[0];
+    }
 
     if (nextPhase) {
       setCurrentPhase(nextPhase);
@@ -537,16 +583,27 @@ export default function HomePage() {
 
   // Reset entire game progress
   const handleResetProgress = () => {
-    setLevels(INITIAL_LEVELS);
-    setMedals(INITIAL_MEDALS);
+    const startedInPrimeiroAno = activeChildProfile?.cycleOrigin === 'primeiro_ano';
+    const nextLevels = startedInPrimeiroAno
+      ? createInitialLevelsForCycle('primeiro_ano')
+      : INITIAL_LEVELS;
+    const nextMedals = startedInPrimeiroAno ? createBlankMedals() : INITIAL_MEDALS;
+
+    setLevels(nextLevels);
+    setMedals(nextMedals);
     setCompletedBookIds([]);
     setJustUnlockedPrimeiroAno(false);
+
+    const activeAfterReset =
+      nextLevels.flatMap((l) => l.phases).find((p) => p.status === 'current') ||
+      nextLevels[0].phases[0];
+    setCurrentPhase(activeAfterReset);
 
     const resetProfile: ChildProfile | null = activeChildProfile
       ? {
           ...activeChildProfile,
-          cycleStage: 'educacao_infantil',
-          primeiroAnoUnlocked: false,
+          cycleStage: startedInPrimeiroAno ? 'primeiro_ano' : 'educacao_infantil',
+          primeiroAnoUnlocked: startedInPrimeiroAno,
           primeiroAnoUnlockedAt: undefined,
         }
       : null;
@@ -563,7 +620,7 @@ export default function HomePage() {
       localStorage.removeItem('aventura_medals');
       localStorage.removeItem('aventura_completed_books');
     } catch {}
-    persistAccountBackup(resetProfile, INITIAL_LEVELS, INITIAL_MEDALS, []);
+    persistAccountBackup(resetProfile, nextLevels, nextMedals, []);
     playSuccessSound();
   };
 

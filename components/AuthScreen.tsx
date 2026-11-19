@@ -17,8 +17,17 @@ import {
   AlertCircle,
   Trophy,
 } from 'lucide-react';
-import { ChildProfile, LevelInfo, Medal } from '@/lib/types';
-import { AVATAR_OPTIONS, INITIAL_LEVELS, INITIAL_MEDALS } from '@/lib/game-data';
+import { ChildProfile, LearningCycle, LevelInfo, Medal } from '@/lib/types';
+import {
+  AVATAR_OPTIONS,
+  INITIAL_LEVELS,
+  INITIAL_MEDALS,
+  createBlankMedals,
+  createInitialLevelsForCycle,
+  isEducacaoInfantilCompleted,
+  isPrimeiroAnoAgeGroup,
+  reconcileLevelsWithCanonical,
+} from '@/lib/game-data';
 import { playPopSound, playSuccessSound } from '@/lib/sound';
 import {
   signUpWithSupabase,
@@ -308,24 +317,65 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
     try {
       const preservedChild = existingProfile || sessionWorkspace?.workspace.child || null;
+      const selectedCycle: LearningCycle = isPrimeiroAnoAgeGroup(ageGroup)
+        ? 'primeiro_ano'
+        : 'educacao_infantil';
+      const isNewChildRegistration = !preservedChild;
+
+      const resolvedCycleOrigin: LearningCycle = isNewChildRegistration
+        ? selectedCycle
+        : preservedChild.cycleOrigin ||
+          (isPrimeiroAnoAgeGroup(preservedChild.ageGroup) &&
+          !isEducacaoInfantilCompleted(
+            currentLevels || sessionWorkspace?.workspace.levels || INITIAL_LEVELS
+          )
+            ? 'primeiro_ano'
+            : 'educacao_infantil');
+
+      const resolvedPrimeiroAnoUnlocked = isNewChildRegistration
+        ? selectedCycle === 'primeiro_ano'
+        : Boolean(preservedChild.primeiroAnoUnlocked) || selectedCycle === 'primeiro_ano';
+
       const draftProfile: ChildProfile = {
         id: preservedChild?.id || 'child-' + Date.now(),
         name: childName.trim(),
         avatarId: selectedAvatarId,
         avatarCustomUrl: customPhotoUrl || undefined,
         ageGroup,
-        cycleStage: preservedChild?.cycleStage,
-        primeiroAnoUnlocked: preservedChild?.primeiroAnoUnlocked,
+        cycleOrigin: resolvedCycleOrigin,
+        cycleStage: resolvedPrimeiroAnoUnlocked ? 'primeiro_ano' : 'educacao_infantil',
+        primeiroAnoUnlocked: resolvedPrimeiroAnoUnlocked,
         primeiroAnoUnlockedAt: preservedChild?.primeiroAnoUnlockedAt,
         createdAt: preservedChild?.createdAt || new Date().toLocaleDateString('pt-BR'),
       };
 
-      const levelsToSync =
-        currentLevels || sessionWorkspace?.workspace.levels || INITIAL_LEVELS;
-      const medalsToSync =
-        currentMedals || sessionWorkspace?.workspace.medals || INITIAL_MEDALS;
-      const booksToSync =
-        currentCompletedBookIds || sessionWorkspace?.workspace.completedBookIds || [];
+      let levelsToSync: LevelInfo[];
+      let medalsToSync: Medal[];
+      let booksToSync: string[];
+
+      if (isNewChildRegistration) {
+        levelsToSync = createInitialLevelsForCycle(selectedCycle);
+        medalsToSync =
+          selectedCycle === 'primeiro_ano' ? createBlankMedals() : INITIAL_MEDALS;
+        booksToSync = [];
+      } else {
+        const baseLevels =
+          currentLevels || sessionWorkspace?.workspace.levels || INITIAL_LEVELS;
+        const cleanInfantilBase =
+          resolvedCycleOrigin === 'primeiro_ano' &&
+          !isEducacaoInfantilCompleted(baseLevels);
+        levelsToSync = reconcileLevelsWithCanonical(
+          baseLevels,
+          resolvedPrimeiroAnoUnlocked,
+          cleanInfantilBase
+        );
+        medalsToSync =
+          currentMedals || sessionWorkspace?.workspace.medals || INITIAL_MEDALS;
+        booksToSync =
+          currentCompletedBookIds ||
+          sessionWorkspace?.workspace.completedBookIds ||
+          [];
+      }
 
       const activeParentId = parentId || (await getCurrentSupabaseUserId()) || '';
       let finalProfile: ChildProfile = draftProfile;

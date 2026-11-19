@@ -7,6 +7,7 @@ import {
   Medal,
   BnccSkill,
   ParentTip,
+  LearningCycle,
 } from './types';
 import { isPhonemeAnswerCorrect, normalizePhonemeString } from './utils';
 
@@ -1724,12 +1725,88 @@ export function applyCycleUnlockToLevels(
 }
 
 /**
+ * Verifica se a faixa escolar informada no cadastro já inicia no 1º Ano Fundamental.
+ */
+export function isPrimeiroAnoAgeGroup(ageGroup?: string | null): boolean {
+  const normalized = normalizePhonemeString(ageGroup || '');
+  return (
+    normalized.includes('1o ano') ||
+    normalized.includes('1º ano') ||
+    normalized.includes('primeiro ano')
+  );
+}
+
+/**
+ * Calcula estatísticas de conclusão das fases do 1º Ano do Ensino Fundamental (Nível 4).
+ */
+export function getPrimeiroAnoProgressStats(levels: LevelInfo[]): {
+  completedCount: number;
+  totalCount: number;
+  percent: number;
+  isCompleted: boolean;
+} {
+  const primeiroAnoPhases = levels
+    .filter((lvl) => (lvl.cycle || (lvl.id <= 3 ? 'educacao_infantil' : 'primeiro_ano')) === 'primeiro_ano')
+    .flatMap((lvl) => lvl.phases);
+  const totalCount = primeiroAnoPhases.length;
+  const completedCount = primeiroAnoPhases.filter((p) => p.status === 'completed').length;
+  const percent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+  return {
+    completedCount,
+    totalCount,
+    percent,
+    isCompleted: totalCount > 0 && completedCount === totalCount,
+  };
+}
+
+/**
+ * Gera a lista limpa de medalhas sem conquistas prévias (para cadastros novos que iniciam direto no 1º Ano).
+ */
+export function createBlankMedals(): Medal[] {
+  return INITIAL_MEDALS.map((m) => ({
+    ...m,
+    unlocked: false,
+    unlockedDate: undefined,
+  }));
+}
+
+/**
+ * Cria os níveis iniciais limpos conforme o ciclo escolhido no cadastro:
+ * - 'primeiro_ano': Níveis 1-3 (Educação Infantil) sem histórico concluído (0 estrelas, locked)
+ *   e Fase 13 (1º Ano Fundamental) já liberada como 'current'.
+ * - 'educacao_infantil': Estrutura padrão da Educação Infantil com Nível 4 bloqueado.
+ */
+export function createInitialLevelsForCycle(cycle: LearningCycle): LevelInfo[] {
+  if (cycle === 'primeiro_ano') {
+    return INITIAL_LEVELS.map((lvl) => {
+      const isPrimeiroAnoLevel = lvl.cycle === 'primeiro_ano' || lvl.id >= 4;
+      return {
+        ...lvl,
+        phases: lvl.phases.map((p, idx) => ({
+          ...p,
+          starsEarned: 0,
+          status: isPrimeiroAnoLevel && idx === 0 ? ('current' as const) : ('locked' as const),
+        })),
+      };
+    });
+  }
+
+  return INITIAL_LEVELS.map((lvl) => ({
+    ...lvl,
+    phases: lvl.phases.map((p) => ({ ...p })),
+  }));
+}
+
+/**
  * Reconcilia níveis salvos no localStorage com a estrutura canônica de INITIAL_LEVELS,
  * preservando progresso (status e estrelas) sem permitir ordem ou letras desatualizadas.
+ * Quando cleanInfantilBase=true, fases da Educação Infantil não salvas iniciam bloqueadas/zeradas
+ * (evitando histórico pré-concluído em cadastros que já começam no 1º Ano Fundamental).
  */
 export function reconcileLevelsWithCanonical(
   savedLevels: LevelInfo[],
-  explicitlyUnlockedPrimeiroAno: boolean = false
+  explicitlyUnlockedPrimeiroAno: boolean = false,
+  cleanInfantilBase: boolean = false
 ): LevelInfo[] {
   const savedPhaseMap = new Map<string, LevelInfo['phases'][number]>();
   for (const lvl of savedLevels) {
@@ -1738,26 +1815,41 @@ export function reconcileLevelsWithCanonical(
     }
   }
 
-  const reconciled = INITIAL_LEVELS.map((canonicalLevel) => ({
-    ...canonicalLevel,
-    phases: canonicalLevel.phases.map((canonicalPhase) => {
-      const saved = savedPhaseMap.get(canonicalPhase.id);
-      if (!saved) return { ...canonicalPhase };
-      return {
-        ...canonicalPhase,
-        starsEarned:
-          typeof saved.starsEarned === 'number'
-            ? Math.max(0, Math.min(3, saved.starsEarned))
-            : canonicalPhase.starsEarned,
-        status:
-          saved.status === 'completed' ||
-          saved.status === 'current' ||
-          saved.status === 'locked'
-            ? saved.status
-            : canonicalPhase.status,
-      };
-    }),
-  }));
+  const reconciled = INITIAL_LEVELS.map((canonicalLevel) => {
+    const isInfantilLevel =
+      (canonicalLevel.cycle || (canonicalLevel.id <= 3 ? 'educacao_infantil' : 'primeiro_ano')) ===
+      'educacao_infantil';
+
+    return {
+      ...canonicalLevel,
+      phases: canonicalLevel.phases.map((canonicalPhase) => {
+        const saved = savedPhaseMap.get(canonicalPhase.id);
+        if (!saved) {
+          if (cleanInfantilBase && isInfantilLevel) {
+            return {
+              ...canonicalPhase,
+              starsEarned: 0,
+              status: 'locked' as const,
+            };
+          }
+          return { ...canonicalPhase };
+        }
+        return {
+          ...canonicalPhase,
+          starsEarned:
+            typeof saved.starsEarned === 'number'
+              ? Math.max(0, Math.min(3, saved.starsEarned))
+              : canonicalPhase.starsEarned,
+          status:
+            saved.status === 'completed' ||
+            saved.status === 'current' ||
+            saved.status === 'locked'
+              ? saved.status
+              : canonicalPhase.status,
+        };
+      }),
+    };
+  });
 
   return applyCycleUnlockToLevels(reconciled, explicitlyUnlockedPrimeiroAno);
 }

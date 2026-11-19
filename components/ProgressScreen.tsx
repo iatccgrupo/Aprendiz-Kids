@@ -40,6 +40,7 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
   });
 
   const unlockedCount = medals.filter((m) => m.unlocked).length;
+  const startedDirectlyInPrimeiroAno = childProfile.cycleOrigin === 'primeiro_ano';
 
   return (
     <div className="relative mx-auto max-w-5xl px-4 py-6 sm:py-10">
@@ -73,7 +74,9 @@ export const ProgressScreen: React.FC<ProgressScreenProps> = ({
                   <Sparkles className="h-3.5 w-3.5 text-yellow-200" />
                 )}
                 <span>
-                  {primeiroAnoUnlocked
+                  {startedDirectlyInPrimeiroAno
+                    ? 'Ciclo Atual: 1º Ano Fundamental'
+                    : primeiroAnoUnlocked
                     ? 'Ciclo Atual: 1º Ano Fundamental Desbloqueado'
                     : currentPhase
                     ? `Fase Atual: ${currentPhase.title} (Fase ${currentPhase.number})`

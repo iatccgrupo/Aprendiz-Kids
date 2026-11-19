@@ -15,6 +15,9 @@ import {
   isEducacaoInfantilCompleted,
   applyCycleUnlockToLevels,
   isPrimeiroAnoAccessible,
+  isPrimeiroAnoAgeGroup,
+  createInitialLevelsForCycle,
+  createBlankMedals,
 } from '../lib/game-data';
 import { buildPrimeiroAnoUnlockSpeech } from '../lib/sound';
 import { isPhonemeAnswerCorrect, normalizePhonemeString } from '../lib/utils';
@@ -190,4 +193,44 @@ test('Progressão de ciclo: 1º Ano Fundamental permanece bloqueado até 100% da
   assert.match(speech, /Educação Infantil/i);
   assert.match(speech, /1º Ano do Ensino Fundamental/i);
 });
+
+test('Cadastro que já inicia no 1º Ano Fundamental não traz histórico concluído da Educação Infantil', () => {
+  const primeiroAnoLevels = createInitialLevelsForCycle('primeiro_ano');
+  const blankMedals = createBlankMedals();
+
+  assert.equal(isPrimeiroAnoAgeGroup('1º Ano Fundamental (6 a 7 anos)'), true);
+  assert.equal(isPrimeiroAnoAgeGroup('Educação Infantil (4 a 5 anos)'), false);
+
+  const edInfantilStats = getEducacaoInfantilProgressStats(primeiroAnoLevels);
+  assert.equal(edInfantilStats.completedCount, 0);
+  assert.equal(edInfantilStats.percent, 0);
+  assert.equal(edInfantilStats.isCompleted, false);
+
+  const infantilStars = primeiroAnoLevels
+    .filter((lvl) => lvl.cycle === 'educacao_infantil')
+    .flatMap((lvl) => lvl.phases)
+    .reduce((acc, p) => acc + p.starsEarned, 0);
+  assert.equal(infantilStars, 0);
+
+  // Fase 13 (1º Ano) já inicia liberada como 'current'
+  assert.equal(primeiroAnoLevels[3].phases[0].id, 'fase-13');
+  assert.equal(primeiroAnoLevels[3].phases[0].status, 'current');
+  assert.equal(isPrimeiroAnoAccessible(primeiroAnoLevels, null), true);
+
+  // Nenhuma medalha pré-conquistada (especialmente m2 de Vogais e m11 de Formando da Educação Infantil)
+  assert.equal(blankMedals.some((m) => m.unlocked), false);
+
+  // Reconciliação com cleanInfantilBase=true não preenche fase-1/fase-2 como concluídas
+  const reconciledFromSaved = reconcileLevelsWithCanonical(
+    [primeiroAnoLevels[3]],
+    true,
+    true
+  );
+  const reconciledStats = getEducacaoInfantilProgressStats(reconciledFromSaved);
+  assert.equal(reconciledStats.completedCount, 0);
+  assert.equal(reconciledFromSaved[0].phases[0].status, 'locked');
+  assert.equal(reconciledFromSaved[0].phases[1].status, 'locked');
+  assert.equal(reconciledFromSaved[3].phases[0].status, 'current');
+});
+
 

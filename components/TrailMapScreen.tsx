@@ -15,6 +15,7 @@ import { LevelInfo, Phase, ChildProfile } from '@/lib/types';
 import {
   AVATAR_OPTIONS,
   getEducacaoInfantilProgressStats,
+  getPrimeiroAnoProgressStats,
   isPrimeiroAnoAccessible,
 } from '@/lib/game-data';
 import { playPopSound, playSuccessSound } from '@/lib/sound';
@@ -38,12 +39,24 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
 }) => {
   const avatarObj = AVATAR_OPTIONS.find((a) => a.id === childProfile.avatarId) || AVATAR_OPTIONS[0];
   const edInfantilStats = getEducacaoInfantilProgressStats(levels);
+  const primeiroAnoStats = getPrimeiroAnoProgressStats(levels);
   const primeiroAnoUnlocked = isPrimeiroAnoAccessible(levels, childProfile);
+  const startedDirectlyInPrimeiroAno =
+    primeiroAnoUnlocked &&
+    (childProfile.cycleOrigin === 'primeiro_ano' || !edInfantilStats.isCompleted);
+
+  // Order levels so direct 1º Ano starters see Level 4 right at the top
+  const orderedLevels = startedDirectlyInPrimeiroAno
+    ? [
+        ...levels.filter((l) => l.cycle === 'primeiro_ano' || l.id >= 4),
+        ...levels.filter((l) => (l.cycle || 'educacao_infantil') === 'educacao_infantil' && l.id < 4),
+      ]
+    : levels;
 
   // Find the currently active phase across unlocked levels
   const currentPhase =
-    levels.flatMap((l) => l.phases).find((p) => p.status === 'current') ||
-    levels[0].phases[0];
+    orderedLevels.flatMap((l) => l.phases).find((p) => p.status === 'current') ||
+    orderedLevels[0].phases[0];
 
   return (
     <div className="relative mx-auto max-w-5xl px-4 py-6 sm:py-10">
@@ -85,7 +98,9 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
                 {primeiroAnoUnlocked && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-400 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-amber-950 shadow-xs">
                     <KeyRound className="h-3 w-3" />
-                    <span>1º Ano Desbloqueado</span>
+                    <span>
+                      {startedDirectlyInPrimeiroAno ? 'Ciclo 1º Ano Ativo' : '1º Ano Desbloqueado'}
+                    </span>
                   </span>
                 )}
               </div>
@@ -93,7 +108,9 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
                 Olá, {childProfile.name}! 👋
               </h1>
               <p className="mt-1 text-sm text-blue-100 max-w-md">
-                {primeiroAnoUnlocked
+                {startedDirectlyInPrimeiroAno
+                  ? 'Sua trilha do 1º Ano do Ensino Fundamental está pronta! Qual desafio vamos jogar hoje?'
+                  : edInfantilStats.isCompleted
                   ? 'Parabéns por concluir a Educação Infantil! Sua nova trilha do 1º Ano já está liberada.'
                   : 'Sua trilha de desafios está esperando. Qual letrinha vamos descobrir hoje?'}
               </p>
@@ -129,29 +146,40 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
           </div>
         </div>
 
-        {/* Educação Infantil -> 1º Ano Cycle Progress Strip */}
+        {/* Cycle Progress Strip */}
         <div className="relative mt-5 rounded-2xl bg-white/10 px-4 py-3 border border-white/20 backdrop-blur-sm">
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-blue-100 mb-2">
             <span className="flex items-center gap-1.5">
               <GraduationCap className="h-4 w-4 text-amber-300" />
               <span>
-                {primeiroAnoUnlocked
+                {startedDirectlyInPrimeiroAno
+                  ? 'Progresso no Ciclo: 1º Ano do Ensino Fundamental'
+                  : edInfantilStats.isCompleted
                   ? 'Educação Infantil 100% Concluída · 1º Ano Fundamental Liberado!'
                   : 'Progresso para desbloquear o 1º Ano Fundamental'}
               </span>
             </span>
             <span className="font-black text-amber-200">
-              {edInfantilStats.completedCount} de {edInfantilStats.totalCount} fases ({edInfantilStats.percent}%)
+              {startedDirectlyInPrimeiroAno
+                ? `${primeiroAnoStats.completedCount} de ${primeiroAnoStats.totalCount} fases (${primeiroAnoStats.percent}%)`
+                : `${edInfantilStats.completedCount} de ${edInfantilStats.totalCount} fases (${edInfantilStats.percent}%)`}
             </span>
           </div>
           <div className="h-2.5 w-full overflow-hidden rounded-full bg-blue-950/40">
             <div
               className={`h-full rounded-full transition-all duration-500 ${
-                primeiroAnoUnlocked
+                edInfantilStats.isCompleted
                   ? 'bg-gradient-to-r from-amber-300 via-emerald-300 to-amber-300'
                   : 'bg-gradient-to-r from-amber-400 to-emerald-400'
               }`}
-              style={{ width: `${Math.max(6, edInfantilStats.percent)}%` }}
+              style={{
+                width: `${Math.max(
+                  6,
+                  startedDirectlyInPrimeiroAno
+                    ? primeiroAnoStats.percent
+                    : edInfantilStats.percent
+                )}%`,
+              }}
             />
           </div>
         </div>
@@ -189,7 +217,7 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
 
       {/* Levels Map Trail */}
       <div className="space-y-10">
-        {levels.map((level) => {
+        {orderedLevels.map((level) => {
           const isPrimeiroAnoLevel = level.cycle === 'primeiro_ano' || level.id >= 4;
           const levelUnlocked = !isPrimeiroAnoLevel || primeiroAnoUnlocked;
 
@@ -232,8 +260,18 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
                         <span className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-orange-500 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-white shadow-xs">
                           <Star className="h-3 w-3 fill-white" />
                           <span>
-                            {justUnlockedPrimeiroAno ? 'Nova Trilha Desbloqueada!' : 'Ciclo Desbloqueado'}
+                            {justUnlockedPrimeiroAno
+                              ? 'Nova Trilha Desbloqueada!'
+                              : startedDirectlyInPrimeiroAno
+                              ? 'Ciclo Inicial Ativo'
+                              : 'Ciclo Desbloqueado'}
                           </span>
+                        </span>
+                      )}
+
+                      {!isPrimeiroAnoLevel && startedDirectlyInPrimeiroAno && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 border border-slate-200 px-2.5 py-0.5 text-[10px] font-extrabold text-slate-600">
+                          <span>Ciclo Anterior · Sem Histórico Concluído</span>
                         </span>
                       )}
 
@@ -348,6 +386,8 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
                             <span>
                               {isPrimeiroAnoLevel && !levelUnlocked
                                 ? 'Conclua 100% da Educação Infantil para liberar'
+                                : !isPrimeiroAnoLevel && startedDirectlyInPrimeiroAno
+                                ? 'Ciclo anterior (início direto no 1º Ano)'
                                 : 'Bloqueado (Conclua a fase anterior)'}
                             </span>
                           </div>
@@ -388,4 +428,5 @@ export const TrailMapScreen: React.FC<TrailMapScreenProps> = ({
     </div>
   );
 };
+
 

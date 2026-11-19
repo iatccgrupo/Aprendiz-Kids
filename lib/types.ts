@@ -6,6 +6,7 @@ export interface ChildProfile {
   avatarId: string;
   avatarCustomUrl?: string;
   ageGroup: string; // e.g. 'Educação Infantil (4 a 5 anos)' | '1º Ano Fundamental (6 a 7 anos)'
+  cycleOrigin?: LearningCycle;
   cycleStage?: LearningCycle;
   primeiroAnoUnlocked?: boolean;
   primeiroAnoUnlockedAt?: string;

@@ -4,8 +4,11 @@ import {
   INITIAL_LEVELS,
   INITIAL_MEDALS,
   PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID,
+  createBlankMedals,
+  createInitialLevelsForCycle,
   isEducacaoInfantilCompleted,
   isPrimeiroAnoAccessible,
+  isPrimeiroAnoAgeGroup,
   reconcileLevelsWithCanonical,
 } from '../game-data';
 import { isPhonemeAnswerCorrect } from '../utils';
@@ -412,6 +415,9 @@ export async function saveChildProfileWithResultToSupabase(
           avatarId: row.avatar_id,
           avatarCustomUrl: row.avatar_custom_url || undefined,
           ageGroup: row.age_group,
+          cycleOrigin:
+            child.cycleOrigin ||
+            (isPrimeiroAnoAgeGroup(row.age_group) ? 'primeiro_ano' : 'educacao_infantil'),
           cycleStage: child.cycleStage,
           primeiroAnoUnlocked: child.primeiroAnoUnlocked,
           primeiroAnoUnlockedAt: child.primeiroAnoUnlockedAt,
@@ -495,14 +501,29 @@ export async function loadChildWorkspaceFromSupabase(
         .eq('child_id', row.id),
     ]);
 
-    const mergedLevels = cloneInitialLevels();
     const typedProgress = (progressRows || []) as Array<{
       phase_id: string;
       stars_earned: number;
       status: 'completed' | 'current' | 'locked';
     }>;
-
     const progressMap = new Map(typedProgress.map((p) => [p.phase_id, p]));
+
+    const typedMedals = (medalRows || []) as Array<{
+      medal_id: string;
+      unlocked_at: string;
+    }>;
+    const medalMap = new Map(typedMedals.map((m) => [m.medal_id, m.unlocked_at]));
+
+    const hasUnlockMarker =
+      progressMap.get(PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID)?.status === 'completed';
+    const hasGraduationMedal = medalMap.has('m11');
+    const isPrimeiroAnoChild = isPrimeiroAnoAgeGroup(row.age_group);
+    const startedDirectlyInPrimeiroAno =
+      isPrimeiroAnoChild && !hasUnlockMarker && !hasGraduationMedal;
+
+    const mergedLevels = startedDirectlyInPrimeiroAno
+      ? createInitialLevelsForCycle('primeiro_ano')
+      : cloneInitialLevels();
 
     if (typedProgress.length > 0) {
       const flatPhases = mergedLevels.flatMap((lvl) => lvl.phases);
@@ -528,13 +549,10 @@ export async function loadChildWorkspaceFromSupabase(
       }
     }
 
-    const mergedMedals = cloneInitialMedals();
-    const typedMedals = (medalRows || []) as Array<{
-      medal_id: string;
-      unlocked_at: string;
-    }>;
+    const mergedMedals = startedDirectlyInPrimeiroAno
+      ? createBlankMedals()
+      : cloneInitialMedals();
 
-    const medalMap = new Map(typedMedals.map((m) => [m.medal_id, m.unlocked_at]));
     if (typedMedals.length > 0) {
       mergedMedals.forEach((medal) => {
         const unlockedAt = medalMap.get(medal.id);
@@ -545,27 +563,34 @@ export async function loadChildWorkspaceFromSupabase(
       });
     }
 
-    const hasUnlockMarker =
-      progressMap.get(PRIMEIRO_ANO_UNLOCK_MARKER_PHASE_ID)?.status === 'completed';
-    const hasGraduationMedal = medalMap.has('m11');
+    const edInfantilCompleted = isEducacaoInfantilCompleted(mergedLevels);
     const primeiroAnoUnlocked =
+      startedDirectlyInPrimeiroAno ||
       hasUnlockMarker ||
       hasGraduationMedal ||
       isPrimeiroAnoAccessible(mergedLevels, null);
 
-    if (primeiroAnoUnlocked) {
+    if (startedDirectlyInPrimeiroAno && !edInfantilCompleted) {
+      child.cycleOrigin = 'primeiro_ano';
+      child.cycleStage = 'primeiro_ano';
+      child.primeiroAnoUnlocked = true;
+    } else if (primeiroAnoUnlocked) {
+      child.cycleOrigin = 'educacao_infantil';
       child.primeiroAnoUnlocked = true;
       child.cycleStage = 'primeiro_ano';
       const unlockedAtRaw = medalMap.get('m11');
       if (unlockedAtRaw) {
         child.primeiroAnoUnlockedAt = new Date(unlockedAtRaw).toLocaleDateString('pt-BR');
       }
-      const m11 = mergedMedals.find((m) => m.id === 'm11');
-      if (m11 && !m11.unlocked) {
-        m11.unlocked = true;
-        m11.unlockedDate = child.primeiroAnoUnlockedAt || 'Hoje';
+      if (edInfantilCompleted || hasUnlockMarker || hasGraduationMedal) {
+        const m11 = mergedMedals.find((m) => m.id === 'm11');
+        if (m11 && !m11.unlocked) {
+          m11.unlocked = true;
+          m11.unlockedDate = child.primeiroAnoUnlockedAt || 'Hoje';
+        }
       }
     } else {
+      child.cycleOrigin = 'educacao_infantil';
       child.cycleStage = 'educacao_infantil';
       child.primeiroAnoUnlocked = false;
     }
@@ -576,7 +601,11 @@ export async function loadChildWorkspaceFromSupabase(
 
     return {
       child,
-      levels: reconcileLevelsWithCanonical(mergedLevels, primeiroAnoUnlocked),
+      levels: reconcileLevelsWithCanonical(
+        mergedLevels,
+        primeiroAnoUnlocked,
+        startedDirectlyInPrimeiroAno && !edInfantilCompleted
+      ),
       medals: mergedMedals,
       completedBookIds,
     };
@@ -629,7 +658,7 @@ export async function saveInitialProgressForChildToSupabase(
   levels: LevelInfo[],
   medals: Medal[] = [],
   completedBookIds: string[] = [],
-  childProfile?: Pick<ChildProfile, 'primeiroAnoUnlocked'> | null
+  childProfile?: Pick<ChildProfile, 'primeiroAnoUnlocked' | 'cycleOrigin' | 'ageGroup'> | null
 ): Promise<void> {
   const supabase = getSupabaseClient();
   if (!supabase || !isUuid(childId)) return;
@@ -637,7 +666,17 @@ export async function saveInitialProgressForChildToSupabase(
   try {
     const nowIso = new Date().toISOString();
     const primeiroAnoUnlocked = isPrimeiroAnoAccessible(levels, childProfile);
-    const syncedLevels = reconcileLevelsWithCanonical(levels, primeiroAnoUnlocked);
+    const edInfantilDone = isEducacaoInfantilCompleted(levels);
+    const startedDirectlyInPrimeiroAno =
+      (childProfile?.cycleOrigin === 'primeiro_ano' ||
+        isPrimeiroAnoAgeGroup(childProfile?.ageGroup)) &&
+      !edInfantilDone;
+
+    const syncedLevels = reconcileLevelsWithCanonical(
+      levels,
+      primeiroAnoUnlocked,
+      startedDirectlyInPrimeiroAno
+    );
 
     const phaseRows = syncedLevels
       .flatMap((lvl) => lvl.phases)
@@ -652,7 +691,8 @@ export async function saveInitialProgressForChildToSupabase(
         updated_at: nowIso,
       }));
 
-    const cycleMarkerRows = primeiroAnoUnlocked
+    // Só grava marcador de formatura da Educação Infantil se ela realmente foi concluída
+    const cycleMarkerRows = isEducacaoInfantilCompleted(syncedLevels)
       ? [
           {
             child_id: childId,
@@ -822,9 +862,18 @@ export function saveLocalAccountWorkspace(
     const raw = localStorage.getItem(SAVED_ACCOUNTS_STORAGE_KEY);
     const parsed: Record<string, SavedLocalAccountSnapshot> = raw ? JSON.parse(raw) : {};
     const unlocked = isPrimeiroAnoAccessible(snapshot.levels, snapshot.child);
+    const edInfantilDone = isEducacaoInfantilCompleted(snapshot.levels);
+    const startedDirectlyInPrimeiroAno =
+      (snapshot.child?.cycleOrigin === 'primeiro_ano' ||
+        isPrimeiroAnoAgeGroup(snapshot.child?.ageGroup)) &&
+      !edInfantilDone;
+
     const syncedChild = snapshot.child
       ? {
           ...snapshot.child,
+          cycleOrigin:
+            snapshot.child.cycleOrigin ||
+            (startedDirectlyInPrimeiroAno ? ('primeiro_ano' as const) : ('educacao_infantil' as const)),
           primeiroAnoUnlocked: unlocked,
           cycleStage: unlocked ? ('primeiro_ano' as const) : ('educacao_infantil' as const),
         }
@@ -834,7 +883,11 @@ export function saveLocalAccountWorkspace(
       ...snapshot,
       child: syncedChild,
       parentEmail: key,
-      levels: reconcileLevelsWithCanonical(snapshot.levels, unlocked),
+      levels: reconcileLevelsWithCanonical(
+        snapshot.levels,
+        unlocked,
+        startedDirectlyInPrimeiroAno
+      ),
       updatedAt: new Date().toISOString(),
     };
     localStorage.setItem(SAVED_ACCOUNTS_STORAGE_KEY, JSON.stringify(parsed));
@@ -856,10 +909,20 @@ export function loadLocalAccountWorkspace(email: string): RestoredWorkspace | nu
     if (!entry || !entry.child) return null;
 
     const baseLevels = entry.levels || cloneInitialLevels();
-    const unlocked = isPrimeiroAnoAccessible(baseLevels, entry.child);
+    const edInfantilDone = isEducacaoInfantilCompleted(baseLevels);
+    const startedDirectlyInPrimeiroAno =
+      (entry.child.cycleOrigin === 'primeiro_ano' ||
+        isPrimeiroAnoAgeGroup(entry.child.ageGroup)) &&
+      !edInfantilDone;
+
+    const unlocked =
+      startedDirectlyInPrimeiroAno || isPrimeiroAnoAccessible(baseLevels, entry.child);
     const savedMedalMap = new Map((entry.medals || []).map((m) => [m.id, m]));
-    const restoredMedals = cloneInitialMedals().map((base) => savedMedalMap.get(base.id) || base);
-    if (unlocked) {
+    const medalTemplate = startedDirectlyInPrimeiroAno
+      ? createBlankMedals()
+      : cloneInitialMedals();
+    const restoredMedals = medalTemplate.map((base) => savedMedalMap.get(base.id) || base);
+    if (edInfantilDone) {
       const m11 = restoredMedals.find((m) => m.id === 'm11');
       if (m11 && !m11.unlocked) {
         m11.unlocked = true;
@@ -870,10 +933,17 @@ export function loadLocalAccountWorkspace(email: string): RestoredWorkspace | nu
     return {
       child: {
         ...entry.child,
+        cycleOrigin:
+          entry.child.cycleOrigin ||
+          (startedDirectlyInPrimeiroAno ? 'primeiro_ano' : 'educacao_infantil'),
         primeiroAnoUnlocked: unlocked,
         cycleStage: unlocked ? 'primeiro_ano' : 'educacao_infantil',
       },
-      levels: reconcileLevelsWithCanonical(baseLevels, unlocked),
+      levels: reconcileLevelsWithCanonical(
+        baseLevels,
+        unlocked,
+        startedDirectlyInPrimeiroAno
+      ),
       medals: restoredMedals,
       completedBookIds: Array.isArray(entry.completedBookIds) ? entry.completedBookIds : [],
     };
@@ -888,17 +958,30 @@ export function mergeRestoredWorkspaces(
   secondary: RestoredWorkspace | null
 ): RestoredWorkspace {
   if (!secondary) {
-    const unlockedPrimary = isPrimeiroAnoAccessible(primary.levels, primary.child);
+    const edInfantilDone = isEducacaoInfantilCompleted(primary.levels);
+    const startedDirectly =
+      (primary.child?.cycleOrigin === 'primeiro_ano' ||
+        isPrimeiroAnoAgeGroup(primary.child?.ageGroup)) &&
+      !edInfantilDone;
+    const unlockedPrimary =
+      startedDirectly || isPrimeiroAnoAccessible(primary.levels, primary.child);
     return {
       ...primary,
       child: primary.child
         ? {
             ...primary.child,
+            cycleOrigin:
+              primary.child.cycleOrigin ||
+              (startedDirectly ? 'primeiro_ano' : 'educacao_infantil'),
             primeiroAnoUnlocked: unlockedPrimary,
             cycleStage: unlockedPrimary ? 'primeiro_ano' : 'educacao_infantil',
           }
         : null,
-      levels: reconcileLevelsWithCanonical(primary.levels, unlockedPrimary),
+      levels: reconcileLevelsWithCanonical(
+        primary.levels,
+        unlockedPrimary,
+        startedDirectly
+      ),
     };
   }
 
@@ -909,7 +992,22 @@ export function mergeRestoredWorkspaces(
     secondary.levels.flatMap((l) => l.phases).map((p) => [p.id, p])
   );
 
-  const mergedLevels = cloneInitialLevels().map((lvl) => ({
+  const primaryHasInfantilDone = isEducacaoInfantilCompleted(primary.levels);
+  const secondaryHasInfantilDone = isEducacaoInfantilCompleted(secondary.levels);
+  const baseChildHint = primary.child || secondary.child;
+  const startedDirectlyInPrimeiroAno =
+    (baseChildHint?.cycleOrigin === 'primeiro_ano' ||
+      isPrimeiroAnoAgeGroup(baseChildHint?.ageGroup)) &&
+    !primaryHasInfantilDone &&
+    !secondaryHasInfantilDone &&
+    !primary.medals.find((m) => m.id === 'm11')?.unlocked &&
+    !secondary.medals.find((m) => m.id === 'm11')?.unlocked;
+
+  const levelBase = startedDirectlyInPrimeiroAno
+    ? createInitialLevelsForCycle('primeiro_ano')
+    : cloneInitialLevels();
+
+  const mergedLevels = levelBase.map((lvl) => ({
     ...lvl,
     phases: lvl.phases.map((p) => {
       const a = primaryPhases.get(p.id);
@@ -930,7 +1028,8 @@ export function mergeRestoredWorkspaces(
 
   const aMedals = new Map(primary.medals.map((m) => [m.id, m]));
   const bMedals = new Map(secondary.medals.map((m) => [m.id, m]));
-  const mergedMedals = cloneInitialMedals().map((base) => {
+  const medalBase = startedDirectlyInPrimeiroAno ? createBlankMedals() : cloneInitialMedals();
+  const mergedMedals = medalBase.map((base) => {
     const mA = aMedals.get(base.id);
     const mB = bMedals.get(base.id);
     if (mA?.unlocked) return mA;
@@ -942,13 +1041,15 @@ export function mergeRestoredWorkspaces(
     new Set([...(primary.completedBookIds || []), ...(secondary.completedBookIds || [])])
   );
 
+  const edInfantilCompleted = isEducacaoInfantilCompleted(mergedLevels);
   const unlocked =
-    isEducacaoInfantilCompleted(mergedLevels) ||
+    startedDirectlyInPrimeiroAno ||
+    edInfantilCompleted ||
     isPrimeiroAnoAccessible(mergedLevels, primary.child) ||
     isPrimeiroAnoAccessible(mergedLevels, secondary.child) ||
     Boolean(mergedMedals.find((m) => m.id === 'm11')?.unlocked);
 
-  if (unlocked) {
+  if (edInfantilCompleted) {
     const m11 = mergedMedals.find((m) => m.id === 'm11');
     if (m11 && !m11.unlocked) {
       m11.unlocked = true;
@@ -963,6 +1064,9 @@ export function mergeRestoredWorkspaces(
         ageGroup: unlocked
           ? '1º Ano Fundamental (6 a 7 anos)'
           : baseChild.ageGroup,
+        cycleOrigin:
+          baseChild.cycleOrigin ||
+          (startedDirectlyInPrimeiroAno ? 'primeiro_ano' : 'educacao_infantil'),
         cycleStage: unlocked ? 'primeiro_ano' : 'educacao_infantil',
         primeiroAnoUnlocked: unlocked,
         primeiroAnoUnlockedAt:
@@ -973,7 +1077,11 @@ export function mergeRestoredWorkspaces(
 
   return {
     child: mergedChild,
-    levels: reconcileLevelsWithCanonical(mergedLevels, unlocked),
+    levels: reconcileLevelsWithCanonical(
+      mergedLevels,
+      unlocked,
+      startedDirectlyInPrimeiroAno && !edInfantilCompleted
+    ),
     medals: mergedMedals,
     completedBookIds: mergedBooks,
   };
